@@ -224,7 +224,10 @@ public final class GameMenu {
         String was = GameSettings.get(a, key);
         GameSettings.set(a, key, value);
         boolean now;
+        if (a instanceof GameActivity && (key.equals("DM_FRAMEGEN") || key.equals("DM_FPS_TARGET"))) ((GameActivity) a).displayMode();   // (the screen's rate follows the frames shown)
         if (key.equals("DM_PERF_OVERLAY")) { if (a instanceof GameActivity) ((GameActivity) a).perfOverlay(value.equals("on")); now = true; }
+        else if (key.equals("DM_DISPLAY_RATE")) { if (a instanceof GameActivity) ((GameActivity) a).displayMode(); now = true; }
+        else if (key.equals("DM_SUSTAINED")) { if (a instanceof GameActivity) ((GameActivity) a).sustained(); now = true; }
         else if (key.equals("DM_LANG")) now = true;
         else if (key.equals("DM_RUMBLE")) {   // (controller / phone: at once; off and back on: the game's motors, from the next start)
             now = !value.equals("off") && !was.equals("off");
@@ -271,6 +274,11 @@ public final class GameMenu {
         // frame generation (nvn_vk.c framegen.h): a frame made between each two real ones, switched while playing; at 30 fps only (the engine leaves it out at 60)
         choice(a, "DM_FRAMEGEN", t(a, "Frame generation"), new String[][] { { "", t(a, "Off"), t(a, "Off: only the game's own frames") },
             { "on", t(a, "On"), t(a, "On (experimental): a frame made between each two at 30 fps, 60 on the screen; slightly more input delay") } });
+        // the screen's refresh rate matched to the game (GameActivity.displayMode)
+        choice(a, "DM_DISPLAY_RATE", t(a, "Screen refresh"), new String[][] { { "", t(a, "Match the game"), t(a, "Match the game: 60 Hz for 30 and 60 fps, less heat and battery than 120 Hz") },
+            { "phone", t(a, "Phone's setting"), t(a, "The phone's own refresh rate") } });
+        if (GameActivity.sustainedSupported(a)) choice(a, "DM_SUSTAINED", t(a, "Sustained performance"), new String[][] {
+            { "", t(a, "Off"), t(a, "Off: the phone's full speed, which drops when it gets hot") }, { "on", t(a, "On"), t(a, "On: a speed the phone can hold for hours, fewer slowdowns when hot") } });
         heading(a, t(a, "Memory"));
         choice(a, "DM_VK_TEX_QUALITY", t(a, "Textures"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", t(a, p[3].equals("half") ? "Half" : "Full")) },
             { "full", t(a, "Full"), t(a, "Full: the game's textures as they are") }, { "half", t(a, "Half"), t(a, "Half: large textures at half size, less memory and GPU work") } });

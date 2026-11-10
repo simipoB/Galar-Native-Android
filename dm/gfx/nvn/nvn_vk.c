@@ -3928,6 +3928,11 @@ static int g_fg_live;   // frame generation made the last present's middle frame
 //   see), pauses = longer than 4 intervals (loading, a pipeline built in play: left out of the mean). The compositor shows every frame a fixed refresh or two after its
 //   time, so lateness against the asked time says nothing; the intervals do
 static int pace_time(VkPresentTimeGOOGLE *pt) {
+    { static uint64_t asked; uint64_t t = mono_ns();   // the refresh rate again once a second: a mode switch after the swapchain was made (window_rate, the phone's own adaptive rate)
+      if (g_dtiming && p_refresh && W.sc && t - asked >= 1000000000ull) { asked = t; VkRefreshCycleDurationGOOGLE rc = { 0 };
+          if (!p_refresh(g_dev, W.sc, &rc) && rc.refreshDuration && (rc.refreshDuration > g_refresh_ns + g_refresh_ns / 50 || rc.refreshDuration + g_refresh_ns / 50 < g_refresh_ns)) {
+              static int said; if (said++ < 20) VLOG("display refresh now %.2f ms (was %.2f)", rc.refreshDuration / 1e6, g_refresh_ns / 1e6);
+              g_refresh_ns = rc.refreshDuration; g_pace.next = 0; } } }
     if (!g_refresh_ns) return 0;
     extern int dm_fps_live __attribute__((weak));   // (loader.c: the live target the in-game menu switches, 30 or 60; 0 = the start's own)
     int lf = &dm_fps_live ? __atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED) : 0;

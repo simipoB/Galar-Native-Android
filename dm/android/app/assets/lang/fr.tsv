@@ -300,3 +300,11 @@ On: L3 and R3 above the sticks (move them with Move the touch controls)	Activé 
 Frame generation	Génération d'images
 Off: only the game's own frames	Non : seulement les images du jeu
 On (experimental): a frame made between each two at 30 fps, 60 on the screen; slightly more input delay	Oui (expérimental) : une image créée entre deux à 30 fps, 60 à l'écran ; un peu plus de latence
+Screen refresh	Fréquence d'écran
+Match the game	Comme le jeu
+Match the game: 60 Hz for 30 and 60 fps, less heat and battery than 120 Hz	Comme le jeu : 60 Hz pour 30 et 60 fps, moins de chaleur et de batterie qu'à 120 Hz
+Phone's setting	Réglage du téléphone
+The phone's own refresh rate	La fréquence du téléphone
+Sustained performance	Performances soutenues
+Off: the phone's full speed, which drops when it gets hot	Non : toute la vitesse du téléphone, qui baisse quand il chauffe
+On: a speed the phone can hold for hours, fewer slowdowns when hot	Oui : une vitesse que le téléphone tient des heures, moins de ralentissements à chaud

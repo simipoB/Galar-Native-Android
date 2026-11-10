@@ -214,7 +214,7 @@ JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env,
             fprintf(stderr, "frame rate: %d fps, switched while playing\n", t);
         } else now = 0;
     }
-    else if (!strcmp(k, "DM_FRAMEGEN")) { extern volatile int dm_framegen; dm_framegen = v && !strcmp(v, "force") ? 2 : v && (!strcmp(v, "on") || !strcmp(v, "1")) ? 1 : 0; }   // (nvn_vk.c framegen.h: at the next present)
+    else if (!strcmp(k, "DM_FRAMEGEN")) { extern volatile int dm_framegen; dm_framegen = v && !strcmp(v, "force") ? 2 : v && (!strcmp(v, "on") || !strcmp(v, "1")) ? 1 : 0; window_rate(atomic_load(&g_window)); }   // (nvn_vk.c framegen.h: at the next present)
     else if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE") || !strcmp(k, "DM_TOUCH_HAPTIC") || !strcmp(k, "DM_TOUCH_L3R3")) touch_ui_setting(k, v);
     else if (!strcmp(k, "DM_RUMBLE")) { touch_ui_setting(k, v); now = 0; }   // (the touch click follows it at once; the game's motors are GameActivity's, GameMenu decides)
     else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
@@ -369,6 +369,9 @@ static void window_rate(ANativeWindow *w) {
     if (!w) return;
     const char *e = getenv("DM_FPS_TARGET"); int fps = e ? atoi(e) : 0; float rate = fps >= 60 && fps <= 120 ? (float)fps : 30.0f;
     { int lf = &dm_fps_live ? __atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED) : 0; if (lf) rate = (float)lf; }   // (the live target, once the game is loaded)
+    { extern volatile int dm_framegen __attribute__((weak)); const char *fe = getenv("DM_FRAMEGEN");   // frame generation shows twice the game's frames: the display at least as fast
+      int fg = &dm_framegen && dm_framegen >= 0 ? dm_framegen > 0 : fe && (!strcmp(fe, "on") || !strcmp(fe, "1") || !strcmp(fe, "force"));
+      if (fg && rate < 60) rate = 60; }
     // libnativewindow: setFrameRateWithChangeStrategy (Android 12+, ALWAYS: the display switches modes even when the switch is not seamless, so a 144 Hz screen goes
     // to 120 for 30 / 60 fps), else setFrameRate (Android 11); looked up, so a system without them only skips this
     typedef int32_t (*set_rate_fn)(ANativeWindow *, float, int8_t); typedef int32_t (*set_rate2_fn)(ANativeWindow *, float, int8_t, int8_t);
@@ -866,6 +869,26 @@ void front_frame_work(uint64_t busy_ns, uint64_t period_ns) {
     }
     if ((int64_t)target_ns != g_hint_target && p_hint_target) p_hint_target(g_hint, g_hint_target = (int64_t)target_ns);
     if (busy_ns) p_hint_report(g_hint, (int64_t)busy_ns);
+}
+// Loading (GameActivity polls this every 500 ms and tells Android 13+ through GameManager.setGameState, so the system can raise the clocks and the storage
+//   speed for it): the game reading its files at 8 MB/s or more; over once it reads under 1 MB/s for 2 s. A load also tells the hint session (Android 16:
+//   APerformanceHint_notifyWorkloadSpike) that this frame's CPU work jumps, before the governor sees the late frames. DM_LOAD_HINT=0: neither
+JNIEXPORT jint JNICALL Java_com_nxnative_GameActivity_nativeLoading(JNIEnv *env, jclass c) {
+    (void)env; (void)c;
+    static int off = -1; if (off < 0) { const char *e = getenv("DM_LOAD_HINT"); off = e && !strcmp(e, "0"); } if (off) return 0;
+    extern _Atomic uint64_t dm_fs_read_bytes __attribute__((weak)); if (!&dm_fs_read_bytes) return 0;
+    static uint64_t last_b, last_t, quiet_since; static int loading;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); uint64_t t = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec, b = atomic_load(&dm_fs_read_bytes);
+    if (last_t && t > last_t) {
+        double mbs = (double)(b - last_b) / 1048576.0 / ((double)(t - last_t) / 1e9);
+        if (!loading && mbs >= 8.0) { loading = 1; quiet_since = 0; fprintf(stderr, "[cpu] loading (%.0f MB/s of game files): the system is told\n", mbs);
+            typedef int (*spike_fn)(void *, int, int, const char *); static spike_fn sp; static int looked;
+            if (!looked) { looked = 1; void *lib = dlopen("libandroid.so", RTLD_NOW); sp = lib ? (spike_fn)dlsym(lib, "APerformanceHint_notifyWorkloadSpike") : NULL; }
+            if (sp && g_hint) sp(g_hint, 1, 0, "load"); }
+        else if (loading && mbs < 1.0) { if (!quiet_since) quiet_since = t; else if (t - quiet_since >= 2000000000ull) { loading = 0; fprintf(stderr, "[cpu] loading over\n"); } }
+        else if (loading) quiet_since = 0;
+    }
+    last_b = b; last_t = t; return loading;
 }
 // The host's front_run (main.c): the guest already runs on our big-stack host thread
 void front_run(void (*guest)(void)) { guest(); }
