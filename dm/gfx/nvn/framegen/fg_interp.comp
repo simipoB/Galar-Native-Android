@@ -1,0 +1,30 @@
+#version 450
+// Frame generation, the middle frame. Each pixel tries the motion of its own block and of the four blocks around it (not a blend of them, which
+// smears an object's motion over the background next to it): with motion m its content was at p - m/2 in the previous frame and is at p + m/2 in
+// the current one, and the candidate whose two samples agree best wins. Agreeing: their average. Not agreeing (an edge where the background is
+// uncovered, smoke, particles, anything the blocks cannot follow): the current frame's side, so that spot moves at 30 fps instead of showing two
+// copies; in between, a mix of the two.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D prevF;
+layout(set = 0, binding = 1) uniform sampler2D curF;
+layout(set = 0, binding = 2) uniform sampler2D motion;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D outI;
+layout(push_constant) uniform P { ivec2 size; ivec2 msize; float thresh; float block; } pc;
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.size.x || p.y >= pc.size.y) return;
+    vec2 inv = 1.0 / vec2(pc.size), uv = (vec2(p) + 0.5) * inv;
+    ivec2 bi = clamp(ivec2(vec2(p) / pc.block), ivec2(0), pc.msize - 1);
+    const ivec2 nb[5] = ivec2[5](ivec2(0), ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+    float be = 1e9; vec4 ba = vec4(0.0), bb = vec4(0.0);
+    for (int k = 0; k < 5; k++) {
+        vec2 m = texelFetch(motion, clamp(bi + nb[k], ivec2(0), pc.msize - 1), 0).xy * inv;
+        vec4 a = texture(prevF, uv - 0.5 * m), b = texture(curF, uv + 0.5 * m);
+        float e = abs(luma(a.rgb) - luma(b.rgb)) + 0.25 * dot(abs(a.rgb - b.rgb), vec3(1.0 / 3.0));
+        if (k == 0) e *= 0.9;   // (a small preference for the pixel's own block)
+        if (e < be) { be = e; ba = a; bb = b; }
+    }
+    float w = smoothstep(pc.thresh, 2.0 * pc.thresh, be);
+    imageStore(outI, p, mix(0.5 * (ba + bb), bb, w));
+}

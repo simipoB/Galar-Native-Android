@@ -214,6 +214,7 @@ JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env,
             fprintf(stderr, "frame rate: %d fps, switched while playing\n", t);
         } else now = 0;
     }
+    else if (!strcmp(k, "DM_FRAMEGEN")) { extern volatile int dm_framegen; dm_framegen = v && !strcmp(v, "force") ? 2 : v && (!strcmp(v, "on") || !strcmp(v, "1")) ? 1 : 0; }   // (nvn_vk.c framegen.h: at the next present)
     else if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE") || !strcmp(k, "DM_TOUCH_HAPTIC") || !strcmp(k, "DM_TOUCH_L3R3")) touch_ui_setting(k, v);
     else if (!strcmp(k, "DM_RUMBLE")) { touch_ui_setting(k, v); now = 0; }   // (the touch click follows it at once; the game's motors are GameActivity's, GameMenu decides)
     else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
@@ -813,10 +814,37 @@ static void pin_update(void) {
 // worked against the frame's period (nvn_vk.c mtl_present). That is what brings the fastest cores and higher clocks when the game needs them, and lower ones
 // when it does not (LAS Recomp's Android port: the prime core otherwise stays parked). The presenting thread also gets the most urgent priority an app may set
 static void *g_hint; static int g_hint_failed; static int64_t g_hint_target;
+// A/B in one run (DM_AB=<frames>:<key>): the switch named <key> alternates every <frames> presented frames, on (1) in the odd stretches, so both sides run in the
+//   same heat: a phone that warms up throttles its cores (a Galaxy S25+ from 4.47 to 1.4 GHz in a long session, 2026-11-09), and two runs one after the other
+//   differed by more than most changes. Returns -1 when <key> is not under test, else 0 or 1. The present line (nvn_vk.c)
+//   names the side each window was on
+int dm_ab(const char *key) {
+    static int init; static long every; static char k[32];
+    if (!init) { init = 1; const char *e = getenv("DM_AB"), *c = e ? strchr(e, ':') : NULL;
+        if (c && (every = atol(e)) > 0) { snprintf(k, sizeof k, "%s", c + 1); fprintf(stderr, "[ab] %s alternates every %ld frames (on in the odd stretches)\n", k, every); } }
+    if (every <= 0 || strcmp(key, k)) return -1;
+    extern uint64_t dm_nvn_frame_count(void) __attribute__((weak));
+    uint64_t f = dm_nvn_frame_count ? dm_nvn_frame_count() : 0; return (int)((f / (uint64_t)every) & 1);
+}
+int dm_ab_side(void) {   // the side of the frame just presented (-1: no DM_AB); the timing lines name it (hle_nvn.c)
+    static int has = -1; static char k[32]; if (has < 0) { const char *e = getenv("DM_AB"), *c = e ? strchr(e, ':') : NULL; has = c != NULL; if (c) snprintf(k, sizeof k, "%s", c + 1); }
+    if (!has) return -1;
+    extern uint64_t dm_nvn_frame_count(void) __attribute__((weak)); const char *e = getenv("DM_AB"); long every = e ? atol(e) : 0; if (every <= 0) return -1;
+    uint64_t f = dm_nvn_frame_count ? dm_nvn_frame_count() : 0; return f ? (int)(((f - 1) / (uint64_t)every) & 1) : 0;
+}
+// The target the hint session is given: three quarters of the frame, not all of it (DM_HINT_TARGET=<percent>, 100: the whole frame as before). With the whole frame
+//   the governor lowers the clocks until the work just fits it, and frames that weigh near 33 ms then go over every few frames, each a refresh late: 17-20 fps at
+//   settings that hold 30 (seen on a Mali-G925: 17-20 fps until the target became 25 ms of 33). DM_AB=<n>:hint compares the two
+static int64_t hint_target(uint64_t period_ns) {
+    static int pct = -1; if (pct < 0) { const char *e = getenv("DM_HINT_TARGET"); pct = e ? atoi(e) : 75; if (pct < 30 || pct > 100) pct = 75; }
+    int ab = dm_ab("hint"); int p = ab < 0 ? pct : ab ? 75 : 100;
+    return (int64_t)period_ns * p / 100;
+}
 static void *(*p_hint_mgr)(void); static void *(*p_hint_create)(void *, const int32_t *, size_t, int64_t);
 static int (*p_hint_target)(void *, int64_t); static int (*p_hint_report)(void *, int64_t);
-void front_frame_work(uint64_t busy_ns, uint64_t target_ns) {
+void front_frame_work(uint64_t busy_ns, uint64_t period_ns) {
     if (g_hint_failed) return;
+    uint64_t target_ns = (uint64_t)hint_target(period_ns);
     if (!g_hint) {
         static int tried; if (tried++) return;
         setpriority(PRIO_PROCESS, (id_t)gettid(), -10);
@@ -834,7 +862,7 @@ void front_frame_work(uint64_t busy_ns, uint64_t target_ns) {
         if (!g_hint && n > pinned && m && p_hint_create) g_hint = p_hint_create(m, t, n = pinned, (int64_t)target_ns);   // (refused with the workers: the two threads as before)
         if (!g_hint || !p_hint_report) { g_hint_failed = 1; fprintf(stderr, "[cpu] no performance hint session\n"); return; }
         g_hint_target = (int64_t)target_ns; for (size_t i = 0; i < pinned; i++) g_pin_tid[i] = t[i]; g_pin_n = (int)pinned; pin_update();
-        fprintf(stderr, "[cpu] performance hint session: %zu threads (%zu of them the game's frame workers), target %.1f ms; presenting thread at priority -10\n", n, n - pinned, target_ns / 1e6);
+        fprintf(stderr, "[cpu] performance hint session: %zu threads (%zu of them the game's frame workers), target %.1f ms of the %.1f ms frame; presenting thread at priority -10\n", n, n - pinned, target_ns / 1e6, period_ns / 1e6);
     }
     if ((int64_t)target_ns != g_hint_target && p_hint_target) p_hint_target(g_hint, g_hint_target = (int64_t)target_ns);
     if (busy_ns) p_hint_report(g_hint, (int64_t)busy_ns);

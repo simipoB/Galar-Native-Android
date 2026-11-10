@@ -1,0 +1,38 @@
+#version 450
+// Frame generation, motion: where each block of the current frame was in the previous one, at one level of a pyramid. One invocation per block
+// of 4x4 pixels of this level (the quarter-size copy: 16x16 full-size pixels; the 1/16-size copy: 64x64). The block's brightness is compared with
+// the previous frame's (sum of absolute differences) at every offset within +-radius pixels of this level around two centres: no motion, and a
+// predictor (the coarse level's result for the fine level; the previous frame's motion for the coarse level, so a pan that keeps going is
+// followed past the radius). A small cost per full-size pixel of distance from no motion keeps still things (the HUD, a still camera) at zero.
+// Writes the motion from the previous frame to the current one in full-size pixels (xy), the best match's cost (z), the cost of no motion (w).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D prevL;
+layout(set = 0, binding = 1) uniform sampler2D curL;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D motion;
+layout(set = 0, binding = 3) uniform sampler2D pred;   // full-size pixels of motion, sampled at the block's centre
+layout(push_constant) uniform P { ivec2 lsize; ivec2 msize; int radius; float scale; float zbias; float use_pred; } pc;
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+float cl[16];
+float cost(ivec2 o, ivec2 v, ivec2 hi) {
+    float s = 0.0;
+    for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) s += abs(luma(texelFetch(prevL, clamp(o + ivec2(i, j) + v, ivec2(0), hi), 0).rgb) - cl[j * 4 + i]);
+    return s + pc.zbias * length(vec2(v)) * pc.scale;
+}
+void main() {
+    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
+    if (b.x >= pc.msize.x || b.y >= pc.msize.y) return;
+    ivec2 o = b * 4, hi = pc.lsize - 1;
+    for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) cl[j * 4 + i] = luma(texelFetch(curL, min(o + ivec2(i, j), hi), 0).rgb);
+    ivec2 centre[2]; centre[0] = ivec2(0);
+    vec2 pm = pc.use_pred > 0.5 ? texture(pred, (vec2(o) + 2.0) / vec2(pc.lsize)).xy : vec2(0.0);
+    centre[1] = ivec2(round(-pm / pc.scale));   // (motion m: the block's content was at o - m in the previous frame)
+    int nc = centre[1] == centre[0] ? 1 : 2;
+    float zero = cost(o, ivec2(0), hi), best = zero; ivec2 bv = ivec2(0);
+    for (int c = 0; c < nc; c++)
+        for (int dy = -pc.radius; dy <= pc.radius; dy++)
+            for (int dx = -pc.radius; dx <= pc.radius; dx++) {
+                ivec2 v = centre[c] + ivec2(dx, dy); float s = cost(o, v, hi);
+                if (s < best) { best = s; bv = v; }
+            }
+    imageStore(motion, b, vec4(-vec2(bv) * pc.scale, best / 16.0, zero / 16.0));
+}

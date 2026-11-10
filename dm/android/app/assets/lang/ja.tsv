@@ -297,3 +297,6 @@ Off: the game's own textures (your HD texture mods stay installed)	オフ：ゲ�
 L3 / R3 buttons	L3 / R3 ボタン
 Off: no L3 / R3 on screen (a controller's stick buttons still work)	オフ：画面に L3 / R3 を表示しない（コントローラーのスティック押し込みは使えます）
 On: L3 and R3 above the sticks (move them with Move the touch controls)	オン：スティックの上に L3 と R3（「タッチ操作の配置を変更」で動かせます）
+Frame generation	フレーム生成
+Off: only the game's own frames	オフ：ゲーム本来のフレームのみ
+On (experimental): a frame made between each two at 30 fps, 60 on the screen; slightly more input delay	オン（試験的）：30 fps の2フレームの間に1フレームを作り、画面は60 fps。操作の遅延が少し増えます

@@ -1125,6 +1125,7 @@ static VkCommandBuffer ucb(void);   // the upload command buffer of the current 
 static void pass_end(void);
 static void state_reset(void);
 static uint64_t g_frame_no;
+static uint64_t g_dsc_gen = 1;   // descriptor pools reset (desc_flush's reuse: a set from an older generation is gone)
 static uint64_t g_wait_ring_ns;   // DM_VK_PROF: waits for a free submission slot (the GPU 6 submissions behind)
 void mtl_sub_begin(void) {
     mtl_init();
@@ -1134,7 +1135,7 @@ void mtl_sub_begin(void) {
     if (s->fence) { uint64_t t0 = mono_ns(); mtl_wait(s->fence, UINT64_MAX); g_wait_ring_ns += mono_ns() - t0; }
     defer_drain();
     VKCHECK(vkResetCommandPool(g_dev, s->pool, 0)); arena_reset(s);
-    for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(g_dev, s->dp[i], 0); s->cdp = 0;
+    for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(g_dev, s->dp[i], 0); s->cdp = 0; g_dsc_gen++;   // (desc_flush's reused sets were in these pools)
     s->npost = 0; s->ucb_open = 0;
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     VKCHECK(vkBeginCommandBuffer(s->cb, &bi));
@@ -2793,6 +2794,49 @@ static void pso_record_s(const vprog *pr, const pkey *k, const sst *s) {   // ca
     fwrite(&r, sizeof r, 1, g_psorec_s); fflush(g_psorec_s);
 }
 static VkPipeline pso_make(vprog *pr, pkey k, const sst *ss);
+// ---- Pipelines kept (Arm's driver, phones under 7.5 GB): at most pso_cap(), the ones unused longest destroyed. Arm's driver keeps ~0.4 MB of the process's memory
+//   and a GPU mapping for each pipeline: 5500 of them have been 2.3 GB of malloc and 61k mappings when a Mali-G720 closed after ~30 minutes; here the Mali players' apps held 1.7-2.6 GB against 1 GB on an Adreno (Shield builds ~1500 at start). Every 300 presents (pso_evict), over the
+//   cap, the pipelines unused for 900 presents go, oldest first, after the GPU is done with them (defer_add); one needed again is built again from the pipeline
+//   cache. The record lists get each pipeline once (g_pso_rec*), not again when it comes back. DM_VK_PIPE_KEEP=<n> (0: never)
+static nvn_hmap g_pso_used = {.klen = sizeof(VkPipeline)}, g_pso_rec = {.klen = sizeof(pkey)}, g_pso_rec_s = {.klen = sizeof(pkey_s)};
+static uint64_t g_pso_evicted;
+static int pso_cap(void) {
+    static int cap = -2; if (cap > -2) return cap;
+    const char *e = getenv("DM_VK_PIPE_KEEP"); long kb = 0;
+    if (!e) { FILE *f = fopen("/proc/meminfo", "r"); char ln[128]; while (f && fgets(ln, sizeof ln, f)) if (sscanf(ln, "MemTotal: %ld kB", &kb) == 1) break; if (f) fclose(f); }
+    cap = e ? atoi(e) : (g_props.vendorID == 0x13B5 || (kb > 0 && kb < 7500000)) ? 800 : 0;
+    if (cap > 0) VLOG("pipelines kept: at most %d (the least recently used ones destroyed when unused for 30 s)", cap); else cap = 0;
+    return cap;
+}
+static void pso_used(VkPipeline p) {   // a draw binds p (the cap is on): its last use
+    pthread_mutex_lock(&g_psomu); nvn_hm_put(&g_pso_used, &p, (void *)(uintptr_t)(g_frame_no + 1)); pthread_mutex_unlock(&g_psomu);
+}
+typedef struct { uint64_t last; VkPipeline p; int s; uint32_t slot; } pso_old;
+static int pso_old_cmp(const void *a, const void *b) { uint64_t x = ((const pso_old *)a)->last, y = ((const pso_old *)b)->last; return x < y ? -1 : x > y; }
+static void pso_evict(void) {
+    int cap = pso_cap(); if (!cap) return;
+    pthread_mutex_lock(&g_psomu);
+    uint32_t live = g_pso.n + g_pso_s.n;
+    if (live <= (uint32_t)cap) { pthread_mutex_unlock(&g_psomu); return; }
+    pso_old *c = malloc(sizeof *c * live); uint32_t nc = 0;
+    for (int which = 0; which < 2 && c; which++) { nvn_hmap *m = which ? &g_pso_s : &g_pso;
+        for (uint32_t i = 0; i < m->cap; i++) { if (!m->vals[i]) continue; VkPipeline p = (VkPipeline)m->vals[i];
+            uint64_t last = (uint64_t)(uintptr_t)nvn_hm_get(&g_pso_used, &p); if (last && last + 900 > g_frame_no + 1) continue;   // (used in the last 30 s)
+            c[nc++] = (pso_old){ last, p, which, i }; } }
+    if (c && nc) {
+        qsort(c, nc, sizeof *c, pso_old_cmp);
+        uint32_t drop = live - (uint32_t)cap * 9 / 10; if (drop > nc) drop = nc;
+        // the keys of the chosen slots first (deleting from a map moves its other entries), then the deletions by key
+        uint8_t *keys = malloc((size_t)drop * (sizeof(pkey_s) > sizeof(pkey) ? sizeof(pkey_s) : sizeof(pkey)));
+        size_t ks = sizeof(pkey_s) > sizeof(pkey) ? sizeof(pkey_s) : sizeof(pkey);
+        for (uint32_t i = 0; keys && i < drop; i++) { nvn_hmap *m = c[i].s ? &g_pso_s : &g_pso; memcpy(keys + i * ks, m->keys + (size_t)c[i].slot * m->klen, m->klen); }
+        for (uint32_t i = 0; keys && i < drop; i++) { nvn_hmap *m = c[i].s ? &g_pso_s : &g_pso;
+            if (nvn_hm_del(m, keys + i * ks)) { nvn_hm_del(&g_pso_used, &c[i].p); defer_add((dfr){ .kind = DF_PIPELINE, .h.pipe = c[i].p }); g_pso_evicted++; } }
+        free(keys);
+    }
+    uint32_t now = g_pso.n + g_pso_s.n; pthread_mutex_unlock(&g_psomu); free(c);
+    static int said; if (said++ < 20) VLOG("pipelines kept: %u of %u left (%llu destroyed so far, at most %d kept)", now, live, (unsigned long long)g_pso_evicted, cap);
+}
 // the pipeline for k with the draw state ss built in (g_eds 0); record: a draw's (the shared list gets k once, this phone's list k with ss), not the prewarm's
 static VkPipeline pso_lookup_s(vprog *pr, const pkey *k, const sst *ss, int record) {
     pkey_s ks; memset(&ks, 0, sizeof ks); ks.k = *k; ks.s = *ss;
@@ -2805,7 +2849,7 @@ static VkPipeline pso_lookup_s(vprog *pr, const pkey *k, const sst *ss, int reco
     VkPipeline q = nvn_hm_get(&g_pso_s, &ks);
     if (q) { pthread_mutex_unlock(&g_psomu); if (p) vkDestroyPipeline(g_dev, p, NULL); return q; }
     if (p) { nvn_hm_put(&g_pso_s, &ks, p); atomic_fetch_add(&g_pso_new, 1);
-             if (record) { atomic_fetch_add(&g_pso_ingame, 1); pso_record_s(pr, k, ss);
+             if (record && !nvn_hm_get(&g_pso_rec_s, &ks)) { nvn_hm_put(&g_pso_rec_s, &ks, (void *)1); atomic_fetch_add(&g_pso_ingame, 1); pso_record_s(pr, k, ss);
                            if (!nvn_hm_get(&g_pso_s_rec, k)) { nvn_hm_put(&g_pso_s_rec, k, (void *)1); pso_record(pr, k); } } }
     else nvn_hm_put(&g_pso_s_fail, &ks, (void *)1);
     pthread_mutex_unlock(&g_psomu);
@@ -2820,7 +2864,7 @@ static VkPipeline pso_lookup(vprog *pr, const pkey *k, int record) {
     pthread_mutex_lock(&g_psomu);
     VkPipeline q = nvn_hm_get(&g_pso, k);
     if (q) { pthread_mutex_unlock(&g_psomu); if (p) vkDestroyPipeline(g_dev, p, NULL); return q; }   // the other thread finished the same one first
-    if (p) { nvn_hm_put(&g_pso, k, p); if (record) { pso_record(pr, k); atomic_fetch_add(&g_pso_ingame, 1); } atomic_fetch_add(&g_pso_new, 1); }
+    if (p) { nvn_hm_put(&g_pso, k, p); if (record && !nvn_hm_get(&g_pso_rec, k)) { nvn_hm_put(&g_pso_rec, k, (void *)1); pso_record(pr, k); atomic_fetch_add(&g_pso_ingame, 1); } atomic_fetch_add(&g_pso_new, 1); }
     else nvn_hm_put(&g_pso_fail, k, (void *)1);
     pthread_mutex_unlock(&g_psomu);
     return p;
@@ -3057,11 +3101,36 @@ static VkDescriptorSet desc_set_alloc(VkDescriptorSetLayout dsl) {
         s->cdp++;   // full: the next pool (made above when there is none)
     }
 }
+// Descriptor sets reused within a submission (drivers without push descriptors: Mali, Xclipse, the emulator; programs over maxPushDescriptors). A set whose writes are
+//   the same as one already written in this submission (layout, bindings, buffers, offsets, ranges, views, samplers) is bound again instead of allocated and written
+//   anew: vkAllocateDescriptorSets and vkUpdateDescriptorSets were ~18 % of a render thread on Qualcomm's own driver, and consecutive
+//   draws of one material often bind exactly the same. Keyed by two 64-bit hashes of every write; the sets stay valid until the submission's pools reset (g_dsc_gen).
+//   DM_VK_DESC_REUSE=0: a new set for every draw as before
+enum { DSC_N = 4096 };
+static struct { uint64_t h1, h2, gen; VkDescriptorSet ds; } g_dsc[DSC_N];
+static uint64_t g_dsc_hits, g_dsc_new;   // sets reused / written (the present line)
+static int dsc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_DESC_REUSE"); v = !(e && !strcmp(e, "0")); if (!v) VLOG("DM_VK_DESC_REUSE=0: a new descriptor set for every draw"); } return v; }
+static void dsc_mix(uint64_t *h1, uint64_t *h2, uint64_t v) { *h1 = (*h1 ^ v) * 0x100000001b3ull; *h2 = (*h2 + v) * 0x9E3779B97F4A7C15ull; *h2 ^= *h2 >> 29; }
 static void desc_flush(VkPipelineBindPoint bp, VkPipelineLayout pl, VkDescriptorSetLayout dsl) {
     if (!g_np || !D.n) { D.n = 0; return; }
+    uint64_t h1 = 0xcbf29ce484222325ull, h2 = 0x84222325cbf29ce4ull; uint32_t slot = 0; int reuse = dsc_on() && (D.n < 320);
+    if (reuse) {
+        dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)dsl); dsc_mix(&h1, &h2, D.n);
+        for (uint32_t i = 0; i < D.n; i++) { const VkWriteDescriptorSet *w = &D.w[i];
+            dsc_mix(&h1, &h2, (uint64_t)w->dstBinding << 32 | (uint32_t)w->descriptorType); dsc_mix(&h1, &h2, w->dstArrayElement); dsc_mix(&h1, &h2, w->descriptorCount);
+            for (uint32_t k = 0; k < w->descriptorCount; k++) {
+                if (w->pBufferInfo) { dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)w->pBufferInfo[k].buffer); dsc_mix(&h1, &h2, w->pBufferInfo[k].offset); dsc_mix(&h1, &h2, w->pBufferInfo[k].range); }
+                else if (w->pImageInfo) { dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)w->pImageInfo[k].imageView); dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)w->pImageInfo[k].sampler); dsc_mix(&h1, &h2, w->pImageInfo[k].imageLayout); }
+                else if (w->pTexelBufferView) dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)w->pTexelBufferView[k]);
+                else dsc_mix(&h1, &h2, 0x5eedull); } }
+        slot = (uint32_t)(h1 ^ h2 >> 17) & (DSC_N - 1);
+        if (g_dsc[slot].gen == g_dsc_gen && g_dsc[slot].h1 == h1 && g_dsc[slot].h2 == h2 && g_dsc[slot].ds) {
+            vkCmdBindDescriptorSets(CB(), bp, pl, 0, 1, &g_dsc[slot].ds, 0, NULL); g_dsc_hits++; D.n = 0; return; }
+    }
     VkDescriptorSet ds = desc_set_alloc(dsl);
     for (uint32_t i = 0; i < D.n; i++) D.w[i].dstSet = ds;
-    vkUpdateDescriptorSets(g_dev, D.n, D.w, 0, NULL);
+    vkUpdateDescriptorSets(g_dev, D.n, D.w, 0, NULL); g_dsc_new++;
+    if (reuse) { g_dsc[slot].h1 = h1; g_dsc[slot].h2 = h2; g_dsc[slot].gen = g_dsc_gen; g_dsc[slot].ds = ds; }
     vkCmdBindDescriptorSets(CB(), bp, pl, 0, 1, &ds, 0, NULL);
     D.n = 0;
 }
@@ -3239,7 +3308,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark) {
     VkCommandBuffer cb = CB(); if (mark) mark[1] = mono_ns();
     { static VkCommandBuffer bcb; static VkPipeline bp; static uint64_t bfence;   // the same pipeline already bound in this command buffer: no rebind (Vulkan keeps it across passes)
       static int off = -1; if (off < 0) off = getenv("DM_VK_BIND_ALWAYS") != NULL;
-      if (off || cb != bcb || bp != p || bfence != g_sub->fence) { vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p); bcb = cb; bp = p; bfence = g_sub->fence; } }
+      if (off || cb != bcb || bp != p || bfence != g_sub->fence) { vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p); bcb = cb; bp = p; bfence = g_sub->fence; if (pso_cap()) pso_used(p); } }
     // dynamic state
     float vx = 0, vy = 0, vw = (float)P.tw, vh = (float)P.th;
     if (S.has_vp) { vx = S.vp[0][0]; vy = S.vp[0][1]; vw = S.vp[0][2]; vh = S.vp[0][3]; }
@@ -3850,7 +3919,8 @@ static int swap_ensure_now(void *win, int srgb) {
 static int pace_off(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_PACE"); v = e && !atoi(e); } return v; }
 // The display's refresh period for the game's vsync timer (hle_sdk16.c vsync_thread): its 60 Hz then follows the display's own clock; 0 when not pacing
 uint64_t dm_display_refresh_ns(void) { return pace_off() ? 0 : g_refresh_ns; }
-static struct { uint64_t next, last_log, n, uneven, pauses, sum, nsum, prev_actual; uint32_t id; } g_pace;
+static struct { uint64_t next, last_log, n, uneven, pauses, sum, nsum, prev_actual; uint32_t id; int on; uint64_t k, iv; } g_pace;   // (on / k / iv: the last present's pacing, for frame generation)
+static int g_fg_live;   // frame generation made the last present's middle frame: frames are shown every half interval (the stats below)
 // The time this frame should reach the screen: one frame interval (1 / the frame rate, rounded to whole refreshes) after the last frame's. A frame that comes late shows at
 //   the next refresh it can make; the target never runs more than one interval ahead of now (with mailbox a newer frame would replace one still waiting). With pacing off
 //   (DM_VK_PACE=0, or a frame rate that is the display's own) the frame still gets an id and no time (0: as soon as it can), so its timing is measured the same way.
@@ -3864,6 +3934,8 @@ static int pace_time(VkPresentTimeGOOGLE *pt) {
     uint64_t r = g_refresh_ns, now = mono_ns(); const char *e = getenv("DM_FPS_TARGET"); int fps = lf ? lf : e && atoi(e) >= 30 ? atoi(e) : 30;
     uint64_t frame = 1000000000ull / (uint64_t)fps, k = (frame + r / 2) / r; if (!k) k = 1;
     uint64_t iv = k * r; int pace = !pace_off() && k >= 2;
+    g_pace.on = pace; g_pace.k = k; g_pace.iv = iv;
+    uint64_t ivs = g_fg_live ? iv / 2 : iv;   // (with frame generation a frame is shown every half interval)
     if (p_past) {
         uint32_t n = 0;
         if (!p_past(g_dev, W.sc, &n, NULL) && n) {
@@ -3871,8 +3943,8 @@ static int pace_time(VkPresentTimeGOOGLE *pt) {
             if (p_past(g_dev, W.sc, &n, t) >= 0) for (uint32_t i = 0; i < n; i++) {
                 uint64_t a = t[i].actualPresentTime; g_pace.n++;
                 if (g_pace.prev_actual && a > g_pace.prev_actual) { uint64_t d = a - g_pace.prev_actual;
-                    if (d > 4 * iv) g_pace.pauses++;
-                    else { g_pace.sum += d; g_pace.nsum++; if (d + r / 2 < iv || d > iv + r / 2) g_pace.uneven++; } }
+                    if (d > 4 * ivs) g_pace.pauses++;
+                    else { g_pace.sum += d; g_pace.nsum++; if (d + r / 2 < ivs || d > ivs + r / 2) g_pace.uneven++; } }
                 g_pace.prev_actual = a; }
         }
     }
@@ -4145,21 +4217,20 @@ static void present_window_locked(vtex *x, const int crop[4]);
 static void present_window(vtex *x, const int crop[4]) { pthread_mutex_lock(&g_wmu); present_window_locked(x, crop); pthread_mutex_unlock(&g_wmu); }
 // The window is going away (android_main.c APP_CMD_TERM_WINDOW): its swapchain and surface are released before that returns, as Android expects
 void nvn_vk_window_term(void) { if (!g_dev) return; pthread_mutex_lock(&g_wmu); swap_destroy(); pthread_mutex_unlock(&g_wmu); }
-static void present_window_locked(vtex *x, const int crop[4]) {
-    void *win = front_metal_layer();
-    if (!win) { if (W.sc) swap_destroy(); return; }
-    if (!g_has_swapchain || !x || !x->img || !(x->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || x->samples > 1) return;
-    int srgb = x->fmt == VK_FORMAT_R8G8B8A8_SRGB || x->fmt == VK_FORMAT_B8G8R8A8_SRGB;
-    if (!swap_ensure(win, srgb)) return;
+#include "framegen.h"
+// One picture to the window: src's region (cx, cy, cw, ch) through the upscaler into the next swapchain image, the touch overlay over it, shown at pt's time.
+//   fg_x: frame generation's real frame, copied into its history first (and the middle frame made) in this same command buffer. Returns 0 when the swapchain went away
+static int present_one(vtex *src, int32_t cx, int32_t cy, int32_t cw, int32_t ch, int flip, VkPresentTimeGOOGLE *pt, int has_pt, vtex *fg_x, const int32_t fg_crop[5]) {
     uint32_t sl = W.slot++ % 3;
     vk_wait(NULL, W.fence[sl], UINT64_MAX);
     uint32_t ii; VkResult r = vkAcquireNextImageKHR(g_dev, W.sc, UINT64_MAX, W.acq[sl], VK_NULL_HANDLE, &ii);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) { swap_destroy(); return; }
-    if (r && r != VK_SUBOPTIMAL_KHR) return;
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) { swap_destroy(); return 0; }
+    if (r && r != VK_SUBOPTIMAL_KHR) return 0;
     vkResetFences(g_dev, 1, &W.fence[sl]);
     VkCommandBuffer cb = W.cb[sl]; vkResetCommandBuffer(cb, 0);
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT }; vkBeginCommandBuffer(cb, &bi);
     barrier_all(cb);
+    if (fg_x) fg_record(cb, fg_x, fg_crop[0], fg_crop[1], fg_crop[2], fg_crop[3], fg_crop[4]);
     VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = W.img[ii], .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
@@ -4167,12 +4238,10 @@ static void present_window_locked(vtex *x, const int crop[4]) {
     vkCmdClearColorImage(cb, W.img[ii], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rr);
     VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
-    int32_t cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int32_t)x->w, ch = crop && crop[3] ? crop[3] : (int32_t)x->h;
     int32_t box[4]; dm_picture_box((int32_t)W.lext.width, (int32_t)W.lext.height, cw, ch, box); int32_t dx = box[0], dy = box[1], dw = box[2], dh = box[3];
-    int flip = atomic_load(&g_origin_ll);
-    if (!scale_draw(cb, x, cx, cy, cw, ch, flip, ii, box)) {   // the upscaler, else the plain linear stretch
+    if (!scale_draw(cb, src, cx, cy, cw, ch, flip, ii, box)) {   // the upscaler, else the plain linear stretch
         VkImageBlit bl = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{cx, flip ? cy + ch : cy, 0}, {cx + cw, flip ? cy : cy + ch, 1}}, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{dx, dy, 0}, {dx + dw, dy + dh, 1}} };
-        vkCmdBlitImage(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, W.img[ii], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
+        vkCmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_GENERAL, W.img[ii], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
     }
     if (!ovl_draw_turned(cb, W.img[ii], W.view[ii], W.ext, W.lext, W.rot, W.fmt, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)) {
         ib.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; ib.dstAccessMask = 0; ib.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; ib.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -4183,13 +4252,40 @@ static void present_window_locked(vtex *x, const int crop[4]) {
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1, .pWaitSemaphores = &W.acq[sl], .pWaitDstStageMask = &ws, .commandBufferCount = 1, .pCommandBuffers = &cb,
                         .signalSemaphoreCount = 1, .pSignalSemaphores = &W.done[sl] };
     VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &W.done[sl], .swapchainCount = 1, .pSwapchains = &W.sc, .pImageIndices = &ii };
-    VkPresentTimeGOOGLE pt; VkPresentTimesInfoGOOGLE pti = { .sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, .swapchainCount = 1, .pTimes = &pt };
-    if (pace_time(&pt)) pi.pNext = &pti;   // (a time asked for, nothing waited on: the present mode stays as it is)
+    VkPresentTimesInfoGOOGLE pti = { .sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, .swapchainCount = 1, .pTimes = pt };
+    if (has_pt) pi.pNext = &pti;   // (a time asked for, nothing waited on: the present mode stays as it is)
     pthread_mutex_lock(&g_qmu);
     r = vkQueueSubmit(g_q, 1, &si, W.fence[sl]);
     if (!r) r = vkQueuePresentKHR(g_q, &pi);
     pthread_mutex_unlock(&g_qmu);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) swap_destroy();
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) { swap_destroy(); return 0; }
+    return 1;
+}
+static void present_window_locked(vtex *x, const int crop[4]) {
+    void *win = front_metal_layer();
+    if (!win) { if (W.sc) swap_destroy(); return; }
+    if (!g_has_swapchain || !x || !x->img || !(x->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || x->samples > 1) return;
+    int srgb = x->fmt == VK_FORMAT_R8G8B8A8_SRGB || x->fmt == VK_FORMAT_B8G8R8A8_SRGB;
+    if (!swap_ensure(win, srgb)) return;
+    int32_t cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int32_t)x->w, ch = crop && crop[3] ? crop[3] : (int32_t)x->h;
+    int flip = atomic_load(&g_origin_ll);
+    VkPresentTimeGOOGLE pt; int has_pt = pace_time(&pt);
+    // Frame generation: the middle frame (between the previous real frame and this one) shown half an interval before this one, both in one go
+    if (cw > 0 && ch > 0 && fg_active(x, (uint32_t)cw, (uint32_t)ch)) {
+        int32_t fc[5] = { cx, cy, cw, ch, flip };
+        if (FG.have_prev) {
+            VkPresentTimeGOOGLE pm = pt; pt.presentID = ++g_pace.id;   // (the middle frame keeps the id pace_time gave; the real one gets the next)
+            if (pm.desiredPresentTime) { uint64_t now = mono_ns(), half = g_pace.iv / 2;
+                pm.desiredPresentTime = pm.desiredPresentTime > now + half ? pm.desiredPresentTime - half : now; }
+            g_fg_live = 1;
+            if (!present_one(FG.iv, 0, 0, cw, ch, 0, &pm, has_pt, x, fc)) return;
+            present_one(x, cx, cy, cw, ch, flip, &pt, has_pt, NULL, NULL);
+        } else { g_fg_live = 0; present_one(x, cx, cy, cw, ch, flip, &pt, has_pt, x, fc); }   // (the first real frame: copied, nothing between yet)
+        static uint64_t said; if (FG.made && FG.made / 1800 != said) { said = FG.made / 1800; VLOG("frame generation: %llu middle frames made", (unsigned long long)FG.made); }
+        return;
+    }
+    g_fg_live = 0;
+    present_one(x, cx, cy, cw, ch, flip, &pt, has_pt, NULL, NULL);
 }
 // Once a minute: where the renderer's memory is, so growth can be told apart (caches that level off: shaders, pipelines; anything else that keeps rising is a leak)
 static void mem_report(void) {
@@ -4252,6 +4348,8 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
         pthread_t t; void *saver(void *a); if (pthread_create(&t, NULL, saver, &busy)) atomic_store(&busy, 0); else pthread_detach(t); } }
     if (n % 1800 == 0) { VLOG("pipelines built during play so far: %d", atomic_load(&g_pso_ingame)); mem_report(); }
     if (n % 1800 == 0 && (g_nanmm || g_clampzero)) VLOG("shaders changed so far: %d for NaN in min / max / saturate, %d for Arm erratum 3779215", atomic_load(&g_nanmm_n), atomic_load(&g_clampzero_n));
+    if (n % 300 == 0) pso_evict();   // (pipelines kept: Arm's driver, phones under 7.5 GB)
+    if (n % 300 == 0 && g_dsc_hits + g_dsc_new) VLOG("present %llu: descriptor sets written %llu, reused %llu (%.0f %%)", (unsigned long long)n, (unsigned long long)g_dsc_new, (unsigned long long)g_dsc_hits, 100.0 * (double)g_dsc_hits / (double)(g_dsc_hits + g_dsc_new));
     if (n == 1 || n % 300 == 0) VLOG("present %llu: %llu render target sets (%llu kept the open pass, %llu passes begun), %llu draws so far; textures uploaded %llu (re-uploaded %llu, %.1f MB)%s", (unsigned long long)n, (unsigned long long)g_stat_passes, (unsigned long long)g_stat_rt_same, (unsigned long long)g_stat_begins,
                                      (unsigned long long)g_stat_draws, (unsigned long long)g_pkg_uploads, (unsigned long long)g_pkg_reuploads, g_up_bytes / 1048576.0,
                                      g_bcgpu ? (snprintf(g_bc_line, sizeof g_bc_line, "; BC layer: %llu levels, %llu copies", (unsigned long long)g_bc_gpu_levels, (unsigned long long)g_bc_gpu_copies), g_bc_line) : "");
