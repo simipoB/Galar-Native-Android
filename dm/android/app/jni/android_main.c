@@ -694,8 +694,9 @@ static void *inspector_main(void *p) {
     return NULL;
 }
 #include "safe_start.h"   // safe_start(): one level safer after a start that crashed in the graphics driver (tests/t_safe_start.c)
+#include "startup_gate.h"
 static void host_start(void) {
-    if (g_started++) return;
+    if (g_started) return;
     const char *f = g_app->activity->externalDataPath; snprintf(g_files, sizeof g_files, "%s", f ? f : "/sdcard/nxnative");
     mkdir(g_files, 0755); choose_game(g_files, sizeof g_files);
     { void touch_ui_set_dir(const char *dir); touch_ui_set_dir(g_files); }   // the player's control layout (touch_ui.c's editor)
@@ -784,11 +785,20 @@ static void host_start(void) {
       } }
     snprintf(p, sizeof p, "%s/save", g_files); mkdir(p, 0755); snprintf(p, sizeof p, "%s/temp", g_files); mkdir(p, 0755);
     snprintf(p, sizeof p, "%s/RomFS", g_game);
-    if (stat(p, &st)) { fprintf(stderr, "boot: game files not found: %s (install the bundle, or copy RomFS, patched, shaders.pak, shader_map.tsv and font there)\n", p); ALOG("game files missing in %s", g_files); return; }
+    if (!startup_gate_has_romfs(!stat(p, &st))) { fprintf(stderr, "boot: game files not found: %s (install the bundle, or copy RomFS, patched, shaders.pak, shader_map.tsv and font there)\n", p); ALOG("game files missing in %s", g_files); return; }
     chdir(g_files);
     fprintf(stderr, "boot: game files %s%s\n", g_game, inapk ? " (inside the installed APKs)" : "");
     pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 64u << 20);
-    pthread_t t; pthread_create(&t, &at, host_thread, NULL); pthread_detach(t);
+    pthread_t t;
+    int thread_result = pthread_create(&t, &at, host_thread, NULL);
+    if (!startup_gate_thread_started(thread_result)) {
+        fprintf(stderr, "boot: could not start the host thread\n");
+        pthread_attr_destroy(&at);
+        return;
+    }
+    pthread_attr_destroy(&at);
+    g_started = 1;
+    pthread_detach(t);
     { pthread_t g; if (!pthread_create(&g, NULL, boot_guard_main, NULL)) pthread_detach(g); }
 }
 // ---------- The fastest cores for the threads a frame waits on. Left alone, the scheduler kept Violet's main thread moving over the middle cores of a Galaxy S25+ (2.7 GHz) with
@@ -816,7 +826,9 @@ static void *g_hint; static int g_hint_failed; static int64_t g_hint_target;
 static void *(*p_hint_mgr)(void); static void *(*p_hint_create)(void *, const int32_t *, size_t, int64_t);
 static int (*p_hint_target)(void *, int64_t); static int (*p_hint_report)(void *, int64_t);
 void front_frame_work(uint64_t busy_ns, uint64_t target_ns) {
-    if (g_hint_failed) return;
+    static int disabled = -1;
+    if (disabled < 0) { const char *e = getenv("DM_PERF_HINT"); disabled = e && !strcmp(e, "off"); }
+    if (disabled || g_hint_failed) return;
     if (!g_hint) {
         static int tried; if (tried++) return;
         setpriority(PRIO_PROCESS, (id_t)gettid(), -10);

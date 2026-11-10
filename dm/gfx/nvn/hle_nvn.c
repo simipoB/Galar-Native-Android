@@ -1596,8 +1596,24 @@ static void vstep_tick(const win_t *o) {
     //   (Sword on a Galaxy S25+: 3 ms of work a frame, held at 30 fps for the whole run)
     { extern _Atomic uint64_t g_nvn_game_work_ns; double w = atomic_load(&g_nvn_game_work_ns) / v; if (w > 0 && w < cpu) cpu = w; }
     double cost = cpu > gpu ? cpu : gpu;
-    // at most 2 slots: 30 fps is the floor, 60 when frames fit (a 3-slot hold, 20 fps, swung the picture between 20 and 60). The live target 30 holds every frame 2
-    int k0 = g_vs.k, n = nvn_fstep_next(&g_vs, shown, cost, live_fps() == 30 ? 2 : 1, 2, 0);
+    // A selected 30/60 target is fixed: adapting the hold from 1 to 2 slots made battle
+    // animation alternate between 60 and 30 fps after a recording hitch. A late frame
+    // should miss its deadline, not change the simulation's animation cadence.
+    int lf = live_fps(), n, k0 = g_vs.k;
+    if (lf == 30 || lf == 60) {
+        int fixed = lf == 30 ? 2 : 1;
+        static int fixed_was;
+        if (fixed_was != lf) {
+            g_vs = (nvn_fstep){ .k = fixed, .step = fixed, .kmin = fixed };
+            fixed_was = lf;
+            LOG("[nvn] frame step: fixed %d fps target (late frames are not repaid by changing animation cadence)", lf);
+        }
+        n = fixed;
+        (void)shown; (void)cost;
+    } else {
+        // Other fixed-rate profiles retain the adaptive controller.
+        n = nvn_fstep_next(&g_vs, shown, cost, 1, 2, 0);
+    }
     uint32_t ns = (uint32_t)(((uint64_t)n * 1000000000ull + (uint64_t)dm_step_hz - 1) / (uint64_t)dm_step_hz);
     dm_guest_write_prepare(dm_step_word, 4); __atomic_store_n((uint32_t *)dm_step_word, ns, __ATOMIC_RELAXED);
     atomic_store(&g_fs_k, g_vs.k); held[g_vs.k]++;

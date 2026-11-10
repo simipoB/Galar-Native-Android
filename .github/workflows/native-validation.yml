@@ -1,0 +1,35 @@
+name: Native validation
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  native-failure-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compilers and Vulkan validation layers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libvulkan-dev vulkan-tools vulkan-validationlayers
+      - name: Build and run startup tests
+        run: |
+          cc -std=c11 -O1 -Wall -Wextra -o /tmp/t_startup_gate dm/android/app/jni/tests/t_startup_gate.c
+          /tmp/t_startup_gate
+      - name: Build and run mocked swapchain tests
+        env:
+          VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+        run: |
+          cc -std=c11 -O1 -Wall -Wextra -I/usr/include -o /tmp/t_swapchain_guard dm/gfx/tests/t_swapchain_guard.c
+          /tmp/t_swapchain_guard
+      - name: Run Mali 1x1 lighting upload regression test
+        run: |
+          cc -std=c11 -O1 -Wall -Wextra -o /tmp/t_upload_layout dm/gfx/tex/tests/t_upload_layout.c
+          /tmp/t_upload_layout
+      - name: Run Vulkan validation-layer smoke test
+        env:
+          VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+        run: |
+          cc -std=c11 -O1 -Wall -Wextra -o /tmp/t_vulkan_validation dm/gfx/tests/t_vulkan_validation.c -lvulkan
+          /tmp/t_vulkan_validation

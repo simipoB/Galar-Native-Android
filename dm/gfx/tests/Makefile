@@ -96,3 +96,15 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_ref
 	MTL_DEBUG_LAYER=1 ./t_pfv
 	python3 test_tbdr_budget.py
 .PHONY: run
+
+t_swapchain_guard: t_swapchain_guard.c ../nvn/swapchain_guard.h
+	clang -O1 -g -Wall -Wextra -I../nvn/include -I../../third_party/vulkan-headers/include -o $@ t_swapchain_guard.c
+
+t_vulkan_validation: t_vulkan_validation.c
+	clang -O1 -g -Wall -Wextra -o $@ t_vulkan_validation.c -lvulkan
+
+t_fgen: t_fgen.c ../nvn/nvn_fgen.h
+	$(CC) -O1 -Wall -o $@ t_fgen.c
+
+t_fgen_vk: t_fgen_vk.c ../nvn/nvn_fgen.h ../nvn/overlay/fgen_spv.h
+	$(CC) -O1 -Wall -Wno-unused-function -I../../third_party/vulkan-headers/include $(if $(VULKAN_INC),-I$(VULKAN_INC)) -o $@ t_fgen_vk.c $(or $(VULKAN_LIB),-lvulkan) -lm

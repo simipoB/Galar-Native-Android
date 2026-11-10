@@ -21,6 +21,8 @@
 #endif
 #include <dlfcn.h>
 #include "vk_dispatch.h"
+#include "swapchain_guard.h"
+#include "nvn_pace.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdarg.h>
@@ -40,6 +42,7 @@
 #include "nvn_spv.h"
 #include "nvn_ovl.h"
 #include "nvn_dirty.h"
+#include "tex_upload_layout.h"
 #include "../tex/nvn_fmt_vk.h"
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/bc_decode.h"
@@ -1609,10 +1612,6 @@ static int tex_upload(vtex *x, const tex_t *t) {
     return r;
 }
 // a level / layer's bytes in an upload's staging: its texels as uploaded (o*: decoded or transcoded with BC), or with BC the blocks themselves if those are larger
-static VkDeviceSize up_slot(int bck, int bw, int bh, int bpb, int obw, int obh, int obpb, uint32_t w, uint32_t h, uint32_t z) {
-    VkDeviceSize out = (VkDeviceSize)((w + obw - 1) / obw) * obpb * ((h + obh - 1) / obh), blocks = (VkDeviceSize)((w + bw - 1) / bw) * bpb * ((h + bh - 1) / bh);
-    return z * (bck && blocks > out ? blocks : out);
-}
 static int tex_upload_(vtex *x, const tex_t *t, uint64_t *copy_ns) {
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); if (!bpb) return -1;
     // BC on a GPU without it: the blocks are deswizzled into scratch and decoded into staging as plain texels (bc_decode.c)
@@ -1623,7 +1622,7 @@ static int tex_upload_(vtex *x, const tex_t *t, uint64_t *copy_ns) {
     // each level / layer's slot in staging: its converted texels, or with BC the blocks the BC layer reads from it if those are larger (a 1x1 level: 16 bytes of
     //   BC6H block, 8 of RGBA16F texel; with the converted size only, the next layer's blocks overwrote this one's second half before the GPU read it: the Mali white
     //   screen, BC6H cubemaps' 1x1 level, #110)
-    #define SLOT(w, h, z) up_slot(bck, bw, bh, bpb, obw, obh, obpb, w, h, z)
+    #define SLOT(w, h, z) nvn_upload_slot(bck, bw, bh, bpb, obw, obh, obpb, w, h, z)
     for (unsigned l = 0; l < x->levels; l++) { uint32_t w = x->w >> l ? x->w >> l : 1, h = x->h >> l ? x->h >> l : 1, z = x->is3d ? (x->d >> l ? x->d >> l : 1) : 1;
         total += SLOT(w, h, z) * layers; }
     // DM_VK_BC_GPU_VERIFY=<kind> (a test switch): the first 8 textures of that kind the BC layer converts, uploaded on their own and waited for, read back and compared
@@ -3694,7 +3693,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
 }
 
 // ================= Present: no window yet (the Android surface comes with the app); paced to the game's period, screenshots on request =================
-static _Atomic uint64_t g_present_n; static uint64_t g_last_present;
+static _Atomic uint64_t g_present_n; static nvn_pacer g_present_pacer;
 static uint32_t crc_tab[256];
 static uint32_t crc32_(uint32_t c, const uint8_t *p, size_t n) { if (!crc_tab[1]) for (uint32_t i = 0; i < 256; i++) { uint32_t r = i; for (int k = 0; k < 8; k++) r = r & 1 ? 0xedb88320u ^ (r >> 1) : r >> 1; crc_tab[i] = r; }
     c = ~c; while (n--) c = crc_tab[(c ^ *p++) & 0xff] ^ (c >> 8); return ~c; }
@@ -3759,6 +3758,33 @@ static struct { void *win; VkSurfaceKHR surf; VkSwapchainKHR sc; VkImage img[8];
 // stack is not its pthread stack (Thread::InitStack: "FindStackTop() > GetStackEnd()"). That was the crash on leaving the app (recents, home) and coming back
 static void swap_destroy_now(void);
 static int swap_ensure_now(void *win, int srgb);
+static void swap_guard_destroy_view(void *ctx, uint32_t index) {
+    (void)ctx;
+    if (index < W.n && W.view[index]) {
+        scfb_forget(W.view[index]);
+        vkDestroyImageView(g_dev, W.view[index], NULL);
+        W.view[index] = VK_NULL_HANDLE;
+    }
+}
+static void swap_guard_destroy_swapchain(void *ctx) {
+    (void)ctx;
+    if (W.sc) {
+        vkDestroySwapchainKHR(g_dev, W.sc, NULL);
+        W.sc = VK_NULL_HANDLE;
+    }
+}
+static void swap_guard_destroy_surface(void *ctx) {
+    (void)ctx;
+    if (W.surf) {
+        vkDestroySurfaceKHR(g_inst, W.surf, NULL);
+        W.surf = VK_NULL_HANDLE;
+    }
+}
+static struct swapchain_guard_cleanup swap_guard_cleanup(void) {
+    return (struct swapchain_guard_cleanup) {
+        swap_guard_destroy_view, swap_guard_destroy_swapchain, swap_guard_destroy_surface, NULL
+    };
+}
 struct swap_job { int make; void *win; int srgb, r; };
 static void *swap_job_main(void *p) {
     struct swap_job *j = p;
@@ -3797,9 +3823,18 @@ static int swap_ensure_now(void *win, int srgb) {
 #else
     (void)win; return 0;
 #endif
-    VkBool32 ok = VK_FALSE; vkGetPhysicalDeviceSurfaceSupportKHR(g_pd, g_qf, W.surf, &ok); if (!ok) { RED_ONCE(57, "the queue cannot present to the window"); return 0; }
-    VkSurfaceCapabilitiesKHR caps; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_pd, W.surf, &caps);
-    uint32_t nf = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(g_pd, W.surf, &nf, NULL); VkSurfaceFormatKHR fs[32]; if (nf > 32) nf = 32; vkGetPhysicalDeviceSurfaceFormatsKHR(g_pd, W.surf, &nf, fs);
+    VkBool32 ok = VK_FALSE; VkResult r = vkGetPhysicalDeviceSurfaceSupportKHR(g_pd, g_qf, W.surf, &ok);
+    if (r || !ok) { RED_ONCE(57, "the queue cannot present to the window (%d)", r); swap_destroy_now(); return 0; }
+    VkSurfaceCapabilitiesKHR caps; r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_pd, W.surf, &caps);
+    if (r) { RED_ONCE(60, "cannot query the window surface capabilities: %d", r); swap_destroy_now(); return 0; }
+    uint32_t nf = 0; r = vkGetPhysicalDeviceSurfaceFormatsKHR(g_pd, W.surf, &nf, NULL);
+    if (r || !nf) {
+        RED_ONCE(61, "the window surface has no usable formats (%d)", r);
+        swapchain_guard_validate(0, 0, 0, 0, 0, r ? r : VK_SUCCESS, swap_guard_cleanup());
+        return 0;
+    }
+    VkSurfaceFormatKHR fs[32]; if (nf > 32) nf = 32; r = vkGetPhysicalDeviceSurfaceFormatsKHR(g_pd, W.surf, &nf, fs);
+    if (r || !nf) { RED_ONCE(61, "cannot enumerate the window surface formats: %d", r); swap_destroy_now(); return 0; }
     VkFormat want = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM; W.fmt = fs[0].format;
     for (uint32_t i = 0; i < nf; i++) if (fs[i].format == want) W.fmt = want;
     W.ext = caps.currentExtent;
@@ -3808,11 +3843,22 @@ static int swap_ensure_now(void *win, int srgb) {
 #endif
     // MAILBOX when the window has it: the game paces its own frames (mtl_present), and with FIFO a slow compositor (a screen recording, the notification shade) held
     // presentation, which shares the queue lock with the game's submissions, so the whole game waited on the compositor (LAS Recomp's Android port measured 4–21 fps with
-    // the GPU mostly idle under FIFO, a steady rate with MAILBOX). DM_VK_PRESENT=fifo|mailbox|immediate to choose
+    // the GPU mostly idle under FIFO, a steady rate with MAILBOX). DM_VK_PRESENT=fifo|mailbox|immediate to choose.
     VkPresentModeKHR pm = VK_PRESENT_MODE_FIFO_KHR;
-    { const char *e = getenv("DM_VK_PRESENT"); VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
-      uint32_t npm = 0; vkGetPhysicalDeviceSurfacePresentModesKHR(g_pd, W.surf, &npm, NULL); VkPresentModeKHR pms[16]; if (npm > 16) npm = 16; vkGetPhysicalDeviceSurfacePresentModesKHR(g_pd, W.surf, &npm, pms);
+    { const char *e = getenv("DM_VK_PRESENT"); VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR :
+          !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
+      uint32_t npm = 0; r = vkGetPhysicalDeviceSurfacePresentModesKHR(g_pd, W.surf, &npm, NULL);
+      if (r) { RED_ONCE(62, "cannot query the window present modes: %d", r); swap_destroy_now(); return 0; }
+      VkPresentModeKHR pms[16]; if (npm > 16) npm = 16;
+      r = npm ? vkGetPhysicalDeviceSurfacePresentModesKHR(g_pd, W.surf, &npm, pms) : VK_SUCCESS;
+      if (r) { RED_ONCE(62, "cannot enumerate the window present modes: %d", r); swap_destroy_now(); return 0; }
       for (uint32_t i = 0; i < npm; i++) if (pms[i] == want) pm = want; }
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if ((caps.supportedUsageFlags & usage) != usage) {
+        RED_ONCE(63, "the window surface does not support the required image usage flags (%#x)", caps.supportedUsageFlags);
+        swapchain_guard_validate(nf, caps.supportedUsageFlags, usage, 0, 0, VK_SUCCESS, swap_guard_cleanup());
+        return 0;
+    }
     uint32_t n = caps.minImageCount + (pm == VK_PRESENT_MODE_MAILBOX_KHR ? 2 : 1); if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;
     // Pre-rotation (DM_VK_PRETRANSFORM=1, opt-in until checked on phones): the panel's own orientation is portrait and the game landscape, so the compositor turns
     // every frame; with the swapchain made in the panel's orientation (preTransform = currentTransform) the upscaler and the overlay draw the picture already turned
@@ -3822,14 +3868,28 @@ static int swap_ensure_now(void *win, int srgb) {
       int q = t == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ? 1 : t == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR ? 2 : t == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR ? 3 : 0;
       if (e && atoi(e) && q && scale_setup(W.fmt, 0)) { W.rot = q; pre = t; if (q & 1) W.ext = (VkExtent2D){ W.lext.height, W.lext.width }; } }
     VkSwapchainCreateInfoKHR ci = { .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = W.surf, .minImageCount = n, .imageFormat = W.fmt, .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
-        .imageExtent = W.ext, .imageArrayLayers = 1, .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .imageExtent = W.ext, .imageArrayLayers = 1, .imageUsage = usage, .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = pre,
         .compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR, .presentMode = pm, .clipped = VK_TRUE };
-    VkResult r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
+    r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
     if (r) { RED_ONCE(58, "swapchain creation failed: %d", r); return 0; }
-    W.n = 8; vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
-    for (uint32_t i = 0; i < W.n; i++) { VkImageViewCreateInfo vci = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = W.img[i], .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = W.fmt,
-                                           .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } }; vkCreateImageView(g_dev, &vci, NULL, &W.view[i]); }
+    W.n = 8; r = vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
+    if (r || !W.n) {
+        RED_ONCE(64, "cannot enumerate the swapchain images: %d", r);
+        swapchain_guard_validate(nf, caps.supportedUsageFlags, usage, W.n, 0, r ? r : VK_SUCCESS, swap_guard_cleanup());
+        return 0;
+    }
+    for (uint32_t i = 0; i < W.n; i++) {
+        VkImageViewCreateInfo vci = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = W.img[i], .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = W.fmt,
+                                      .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+        r = vkCreateImageView(g_dev, &vci, NULL, &W.view[i]);
+        if (r) {
+            RED_ONCE(65, "swapchain image view %u creation failed: %d", i, r);
+            swapchain_guard_validate(nf, caps.supportedUsageFlags, usage, W.n, i, r, swap_guard_cleanup());
+            W.n = 0;
+            return 0;
+        }
+    }
     if (!W.pool) {
         VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = g_qf }; vkCreateCommandPool(g_dev, &pci, NULL, &W.pool);
         VkCommandBufferAllocateInfo cai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = W.pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 3 }; vkAllocateCommandBuffers(g_dev, &cai, W.cb);
@@ -4245,9 +4305,9 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     { static long of = -1; static const char *op; if (of < 0) { const char *e = getenv("DM_OVL_SHOT"), *c = e ? strchr(e, ':') : NULL; of = c ? atol(e) : 0; op = c ? c + 1 : NULL; }
       if (of && (long)n == of && op) { vtex *x = tex_res(t); if (x && x->img) ovl_shot(x, crop, op); } }
 #endif
-    uint64_t now = mono_ns(), due = g_last_present + (uint64_t)(period_s * 1e9);
-    if (period_s > 0 && due > now) { struct timespec ts = { (time_t)((due - now) / 1000000000ull), (long)((due - now) % 1000000000ull) }; nanosleep(&ts, NULL); now = due; }
-    g_last_present = now; g_present_exit = mono_ns();
+    uint64_t now = mono_ns(), wait = nvn_pace(&g_present_pacer, now, period_s > 0 ? (uint64_t)(period_s * 1e9) : 0);
+    if (wait) { struct timespec ts = { (time_t)(wait / 1000000000ull), (long)(wait % 1000000000ull) }; nanosleep(&ts, NULL); now += wait; }
+    g_present_exit = mono_ns();
     if (n % 900 == 0 && atomic_load(&g_pso_new) >= 10) { static atomic_int busy; if (!atomic_exchange(&busy, 1)) {   // new pipelines: the cache file is rewritten in the background
         pthread_t t; void *saver(void *a); if (pthread_create(&t, NULL, saver, &busy)) atomic_store(&busy, 0); else pthread_detach(t); } }
     if (n % 1800 == 0) { VLOG("pipelines built during play so far: %d", atomic_load(&g_pso_ingame)); mem_report(); }
