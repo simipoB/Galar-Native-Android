@@ -5,8 +5,16 @@
 int main(void) {
     uint32_t n = 0;
     VkLayerProperties layers[64];
-    if (vkEnumerateInstanceLayerProperties(&n, NULL) != VK_SUCCESS || n > 64 ||
-        vkEnumerateInstanceLayerProperties(&n, layers) != VK_SUCCESS) return 1;
+    VkResult r = vkEnumerateInstanceLayerProperties(&n, NULL);
+    if (r != VK_SUCCESS || n > 64) {
+        fprintf(stderr, "layer enumeration failed: %d (count %u)\n", r, n);
+        return 1;
+    }
+    r = vkEnumerateInstanceLayerProperties(&n, layers);
+    if (r != VK_SUCCESS) {
+        fprintf(stderr, "layer listing failed: %d\n", r);
+        return 1;
+    }
     int found = 0;
     for (uint32_t i = 0; i < n; i++) if (!strcmp(layers[i].layerName, "VK_LAYER_KHRONOS_validation")) found = 1;
     if (!found) {
@@ -17,8 +25,11 @@ int main(void) {
     VkApplicationInfo app = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "Galar Native validation smoke", .apiVersion = VK_API_VERSION_1_0 };
     VkInstanceCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app, .enabledLayerCount = 1, .ppEnabledLayerNames = &name };
     VkInstance instance = VK_NULL_HANDLE;
-    VkResult r = vkCreateInstance(&ci, NULL, &instance);
-    if (r != VK_SUCCESS) return 1;
+    r = vkCreateInstance(&ci, NULL, &instance);
+    if (r != VK_SUCCESS) {
+        fprintf(stderr, "validation instance creation failed: %d\n", r);
+        return 1;
+    }
     vkDestroyInstance(instance, NULL);
     return 0;
 }
