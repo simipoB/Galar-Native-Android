@@ -13,12 +13,13 @@ int main(void) {
       CHECK(!fg_plan_frame(&s, 1000 * MS + 2 * P + 3 * MS + 80 * MS, P));   // after a hitch of 80 ms: no in-between of two far-apart frames
       CHECK(fg_plan_frame(&s, 1000 * MS + 3 * P + 83 * MS, P));             // and again once frames come evenly
       CHECK(!fg_plan_frame(&s, 1000 * MS + 3 * P + 83 * MS + 5 * MS, P)); } // two frames 5 ms apart (the game caught up): nothing between
-    { // the real frame: half a period after the in-between; with asked display times on a 120 Hz screen one refresh before its own time
-      CHECK(fg_real_due(100 * MS, 0, P / 2, 0) == 100 * MS + P / 2);
-      CHECK(fg_real_due(100 * MS, 0, P / 2, R120) == 100 * MS + P / 2);
-      CHECK(fg_real_due(100 * MS, 108 * MS, P / 2, R120) == 108 * MS + P / 2 - R120);
-      CHECK(fg_real_due(100 * MS, 108 * MS, P / 2, R60) == 100 * MS + P / 2);   // 60 Hz: half a period is one refresh, no room to be early
-      CHECK(fg_real_due(200 * MS, 108 * MS, P / 2, R120) == 200 * MS); }       // never in the past
+    { // the real frame: half a period after the in-between; with asked display times on a 120 Hz screen a part of a refresh before the in-between's time
+      CHECK(fg_real_due(100 * MS, 0, P / 2, 0, 50) == 100 * MS + P / 2);
+      CHECK(fg_real_due(100 * MS, 0, P / 2, R120, 50) == 100 * MS + P / 2);
+      CHECK(fg_real_due(100 * MS, 116 * MS, P / 2, R120, 50) == 116 * MS - R120 / 2);
+      CHECK(fg_real_due(100 * MS, 116 * MS, P / 2, R120, -100) == 116 * MS + R120);   // (a negative lead: after the in-between's time)
+      CHECK(fg_real_due(100 * MS, 116 * MS, P / 2, R60, 50) == 100 * MS + P / 2);     // 60 Hz: half a period is one refresh, times are not asked
+      CHECK(fg_real_due(200 * MS, 116 * MS, P / 2, R120, 50) == 200 * MS); }          // never in the past
     { fg_plan s = { 0 }; uint64_t t = 5000 * MS; int off = 0;   // 3 ms a picture against an 8 ms budget: never off
       for (int i = 0; i < 600; i++, t += P) off |= fg_plan_cost(&s, 3 * MS, t, 8 * MS);
       CHECK(!off); }

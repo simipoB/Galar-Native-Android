@@ -4,7 +4,7 @@
 
 - Repository: `simipoB/Galar-Native-Android`
 - Branch: `simipob-fix-white-screen`
-- Remote tip: `db7f7d7`
+- Remote tip before the current feature commit: `d940d6b`
 - Remote branch: `origin/simipob-fix-white-screen`
 - The worktree was clean when this handoff was written.
 - Commits in this change:
@@ -46,7 +46,7 @@
 - Passing GitHub Actions run: `42879347947`
 - Android native build passed with 141 compiled units and produced `libnxnative.so`.
 
-### Frame-generation groundwork
+### Experimental frame generation
 
 - `dm/gfx/nvn/nvn_fgen.h`
 - `dm/gfx/nvn/overlay/fg_*.frag`
@@ -55,20 +55,22 @@
 - `dm/gfx/tests/t_fgen.c`
 - `dm/gfx/tests/t_fgen_vk.c`
 
-This is an isolated experimental module and software-Vulkan-tested groundwork. It is **not wired into the production present path** and must not be described as shipped frame generation.
+The setting is opt-in and labeled experimental. It captures consecutive real frames, generates an intermediate Vulkan frame, presents it before the real frame, and requests a 120 Hz display mode for a 30 FPS source. It disables itself for unsupported formats, dynamic/oversized frames, setup failure, or excessive GPU cost. The phone-tuned handoff defaults are `lead=300, early=150`; `DM_FRAMEGEN_TUNE=lead,early` remains available for diagnostics. The setting adds about one frame of input latency and is not a claim of universal device support.
 
 ## Validation and limitations
 
 - Focused startup, swapchain, BC upload, frame-step, pacing, and frame-generation tests passed during development.
+- The Android native frame-generation integration rebuilt successfully with 141 compiled units.
+- The Vulkan frame-generation test could not be compiled in the current WSL environment because `vulkan/vulkan.h` is not installed; this is an environment limitation, not a passing result.
 - GitHub Actions native validation passed in run `42879347947`.
 - A fresh test APK containing the rebuilt native library installed and launched on Samsung `SM-S936W` (`R3CY10A70CV`) without an Android crash.
 - The test APK intentionally contained no game dump or encryption keys, so it could not exercise real gameplay or prove the post-setup Vulkan white-screen path on-device.
 - The oversized menu/Pokemon view remains unresolved.
-- No production frame-generation integration exists.
+- Full gameplay/frame-generation validation still requires the user's already-installed authorized game data; no dumps, keys, or private game data were requested or transferred.
 
 ## Review boundaries
 
 - Do not request or transfer commercial Switch dumps, encryption keys, or private game data.
 - Review the pushed branch, not only `origin/main`.
-- Pay particular attention to partial swapchain cleanup, fixed-rate frame stepping, BC staging-size invariants, and the fact that frame generation is not integrated.
+- Pay particular attention to partial swapchain cleanup, fixed-rate frame stepping, BC staging-size invariants, the opt-in frame-generation fallback paths, and refresh-rate changes after Android's display-mode vote.
 - Treat the CI Vulkan smoke test's no-ICD path as an environment skip, not as evidence of runtime Vulkan support on Android.

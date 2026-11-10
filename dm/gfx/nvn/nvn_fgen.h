@@ -205,12 +205,13 @@ static inline int fg_plan_frame(fg_plan *s, uint64_t now, uint64_t period) {
     uint64_t d = s->last ? now - s->last : 0; s->last = now;
     return d && d * 2 >= period && d * 2 <= period * 3;
 }
-// When the real frame is handed to the display after its in-between picture: half a period after the in-between's time (want: its asked display time, 0 = none
-// asked, shown at once), one refresh earlier when the display honours asked times (it is then queued for want + half; a frame queued before the one ahead of it
-// was taken would replace it under mailbox)
-static inline uint64_t fg_real_due(uint64_t now, uint64_t want, uint64_t half, uint64_t refresh) {
+// When the real frame is handed to the display after its in-between picture. No display times asked (want 0), or a display whose refresh is the half period (60 Hz):
+// half a period after the in-between. With asked times (want: the in-between's; the real frame then asks want + half): early hundredths of a refresh before want.
+// By then the display has taken the in-between (handed over sooner, the real frame would replace it under mailbox) and the real frame still has refreshes in hand
+// to make its own time (handed over later, it shows a refresh late)
+static inline uint64_t fg_real_due(uint64_t now, uint64_t want, uint64_t half, uint64_t refresh, int early) {
     if (!want || !refresh || half < 2 * refresh) return now + half;
-    uint64_t due = want + half - refresh; return due > now ? due : now;
+    uint64_t due = want - (uint64_t)((int64_t)refresh * early / 100); return due > now ? due : now;
 }
 // The GPU's time for one in-between picture (ns). Returns 1 once the mean over a 2 s window is over the budget twice running: too slow, the caller turns it off
 static inline int fg_plan_cost(fg_plan *s, uint64_t gpu_ns, uint64_t now, uint64_t budget) {

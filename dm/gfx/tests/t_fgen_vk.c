@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.h>
 #include "../nvn/nvn_fgen.h"
 #define W 1280
 #define H 720
