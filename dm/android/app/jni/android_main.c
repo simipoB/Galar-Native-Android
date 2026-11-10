@@ -563,6 +563,7 @@ void dm_set_opmode(int m);   // host/hle_oe.c: tells the game the console mode c
 int dm_res_scale_ready(void); void dm_res_factor_set(float f);   // host/hle_resscale.c
 static const float k_res_steps[] = { 1.0f, 0.85f, 0.7f, 0.6f };
 #define NRES ((int)(sizeof k_res_steps / sizeof k_res_steps[0]))
+#define RES_HOT 2   // the step heat goes straight to: 70 %, about 720p from 1080p (the upscaler brings it back to the screen's size)
 static int g_fps_guard;   // set at start (fps_guard_init): the target, 0 off
 static void fps_guard_init(void) {
     const char *t = getenv("DM_FPS_TARGET"), *off = getenv("DM_FPS_GUARD"), *g = getenv("DM_GRAPHICS");
@@ -577,7 +578,8 @@ static void graphics_auto(void) {
     if (!(g && !strcmp(g, "auto") && g_th_mgr && g_th_st) && !g_fps_guard) return;
     int hot = 0, calm = 1;
     if (g_th_mgr && g_th_st) { int st = g_th_st(g_th_mgr); float hr = g_th_hr ? g_th_hr(g_th_mgr, 10) : -1.0f;
-        hot = st >= 3 || hr >= 0.95f; calm = st <= 1 && (hr < 0 || hr < 0.75f); }
+        // hot from "moderate" (2): the status a Galaxy S25+ sat at with all its cores capped to 1.4-2.2 GHz; "severe" (3) came too late to save the frame rate
+        hot = st >= 2 || hr >= 0.9f; calm = st <= 1 && (hr < 0 || hr < 0.75f); }
     double fps = -1;
     if (g_fps_guard && dm_nvn_frame_count) { uint64_t fr = dm_nvn_frame_count(); if (primed) fps = (fr - last_fr) / 5.0; last_fr = fr; primed = 1; }
     // decisions on an average, not one 5-s reading: on a hot phone the readings swung 25.6 / 15.4 / 21.6, and the 15.4 made the next reading look like a gain, so the
@@ -609,8 +611,9 @@ static void graphics_auto(void) {
         if ((for_heat || for_rate) && lv < NRES - 1) {
             if (!for_heat && held < 24 && wait < 192) wait *= 2;   // short again soon after a step up: wait twice as long next time
             probe = 3; probe_hot = for_heat; fps_was = fps_avg > 1 ? fps_avg : fps;
-            lv++; dm_res_factor_set(k_res_steps[lv]); cool = 0; held = 0; slow = 0; since = 0;
-            if (for_heat) fprintf(stderr, "graphics auto: the phone is hot: 3D render scale %d %%\n", (int)(k_res_steps[lv] * 100 + 0.5f));
+            lv++; if (for_heat && lv < RES_HOT) lv = RES_HOT;   // hot: straight to about 720p (70 % of 1080p), not one step every 30 s while the phone keeps heating up
+            dm_res_factor_set(k_res_steps[lv]); cool = 0; held = 0; slow = 0; since = 0;
+            if (for_heat) fprintf(stderr, "graphics auto: the phone is hot: 3D render scale %d %% (about %dp)\n", (int)(k_res_steps[lv] * 100 + 0.5f), (int)(1080 * k_res_steps[lv] + 0.5f));
             else fprintf(stderr, "fps guard: %.1f fps, short of %d: 3D render scale %d %%; a step up after %d s steady\n", fps, g_fps_guard, (int)(k_res_steps[lv] * 100 + 0.5f), wait * 5);
         } else if (lv > 0 && cool >= wait) {
             lv--; dm_res_factor_set(k_res_steps[lv]); cool = 0; held = 0; slow = 0; since = 0; probe = 0;

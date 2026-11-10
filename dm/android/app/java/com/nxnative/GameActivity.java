@@ -39,7 +39,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         if (GameSettings.get(this, "DM_PERF_OVERLAY").equals("on")) perfOverlay(true);
         displayMode(); sustained(); loadH.postDelayed(loadPoll, 2000);
     }
-    // ---------- the display matched to the game (DM_DISPLAY_RATE: "" match the game, "phone" the phone's own setting; the menu's Display -> Screen refresh) ----------
+    // ---------- the display matched to the game, always (no setting; DM_DISPLAY_RATE=phone in env.txt leaves the phone's own rate, for comparing) ----------
     // The lowest display mode of at least 60 Hz (touch stays responsive) that the frames shown divide evenly: 60 Hz for 30 and 60 fps on a 120 Hz phone, which
     //   otherwise keeps its panel at 120 for a game that changes the picture 30 times a second (more power, more heat, and a hot phone slows down). The frames
     //   shown are the game's, twice with Frame generation. The engine reads the new refresh rate within a second (nvn_vk.c pace_time)
