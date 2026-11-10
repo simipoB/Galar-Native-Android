@@ -11,6 +11,7 @@
   - `aefddf9` — startup/Vulkan hardening, fixed 30/60 pacing, performance-hint control, frame-generation groundwork, and focused tests.
   - `db4fc90` — make the Vulkan validation smoke test diagnostic and remove redundant forced layer activation.
   - `db7f7d7` — treat `VK_ERROR_INCOMPATIBLE_DRIVER` as a successful skip when CI has no Vulkan ICD.
+  - `0b7de9a` — add the opt-in experimental frame-generation setting and production present-path integration.
 
 ## What changed
 
@@ -67,6 +68,7 @@ The setting is opt-in and labeled experimental. It captures consecutive real fra
 - The test APK intentionally contained no game dump or encryption keys, so it could not exercise real gameplay or prove the post-setup Vulkan white-screen path on-device.
 - The oversized menu/Pokemon view remains unresolved.
 - Full gameplay/frame-generation validation still requires the user's already-installed authorized game data; no dumps, keys, or private game data were requested or transferred.
+- Source release: `v0.61` (`Experimental frame generation`); no APK is attached because the official release signing key and complete packaging bundle were unavailable in this checkout.
 
 ## Review boundaries
 
