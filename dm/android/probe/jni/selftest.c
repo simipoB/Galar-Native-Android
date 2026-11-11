@@ -8,6 +8,7 @@
 //   3d-render-target    att_view: a 3D image's slices attached as a layered 2D array (the colour-grading tables; black 3D scenes when only slice 0 drew)
 //   dmabuf-heap         the heap route: /dev/dma_heap memory mapped at a fixed address and imported into the driver (the Mali / Xclipse memory pools)
 //   bc-textures         the BC layer (gfx/tex/bc_gpu.c, linked as is): BC1-BC7 converted on the GPU only where it matches the CPU bit for bit
+//   phone-hints, heap-speed, descriptor-sets, pipeline-memory, frame-generation: the engine's newer paths (selftest_engine.h)
 // A crash inside the driver (SIGSEGV / SIGBUS / SIGABRT) is caught: that test reports it and the remaining GPU tests are skipped.
 #include <errno.h>
 #include <fcntl.h>
@@ -711,6 +712,8 @@ static void t_requirements(void) {
       dynren ? "" : "render passes", !dynren && !eds ? ", " : "", eds ? "" : "draw state built into each pipeline: no pipeline prewarm, more pipelines");
 }
 
+#include "selftest_engine.h"   // heap-speed, pipeline-memory, descriptor-sets, frame-generation, phone-hints
+
 typedef void (*test_fn)(void);
 void probe_selftests(void) {
     O("\n== Galar Native GPU self-tests (synthetic data: no game files)\n");
@@ -721,6 +724,8 @@ void probe_selftests(void) {
       VK_API_VERSION_PATCH(s_props.apiVersion), s_props.driverVersion, s_props.vendorID, s_props.deviceID);
     static const struct { test_fn f; const char *n; } T[] = { { t_requirements, "engine-requirements" }, { t_floatctl, "float-controls" }, { t_shmath, "shader-maths" }, { t_barrier, "end-of-submit-barrier" }, { t_reinterp, "reinterpreted-format" },
                                                             { t_fallback, "fallback-draw" }, { t_dmabuf, "dmabuf-heap" }, { t_bc, "bc-textures" },
+                                                            { t_phone_hints, "phone-hints" }, { t_heap_speed, "heap-speed" }, { t_desc_cost, "descriptor-sets" },
+                                                            { t_pipe_mem, "pipeline-memory" }, { t_framegen, "frame-generation" },
                                                             { t_3d_slices, "3d-slices" }, { t_3d_layered, "3d-layered" } };   // (3D last: it crashed Xclipse 540's driver)
     size_t nt = sizeof T / sizeof *T, i;
     guard(1);
