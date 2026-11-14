@@ -383,17 +383,20 @@ def pak_keys(path):   # the keys an NXSP shader pack holds, and its chain versio
     return {idx[stride * i:stride * i + 8] for i in range(n)}, h[12:28].rstrip(b'\0').decode()
 
 def pak_merge(path, add):   # merge a new uncompressed shader pack into the existing pack, preserving any GL depth variants
-    with open(add, 'rb') as f: b = f.read()
+    # written as it is read (the old pack's data copied in chunks, each new shader read and compressed on its own, the sorted index last), so neither pack is held in
+    #   memory whole: the new pack can be most of a game's shaders (a mod's, or the other game of a pair sharing just over half), as large as spv_pak.py's
+    fa = open(add, 'rb'); b = fa.read(28)
     add_ver, nb = struct.unpack_from('<II', b, 4)
     if b[:4] != b'NXSP' or add_ver not in (1, 3): raise RuntimeError(f'{add} is not an uncompressed shader pack')
-    add_stride = 44 if add_ver == 3 else 32
+    add_stride = 44 if add_ver == 3 else 32; add_index = fa.read(add_stride * nb)
+    if len(add_index) != add_stride * nb: raise RuntimeError(f'{add} has a truncated shader pack index')
     src = open(path, 'rb'); h = src.read(28); ver, na = struct.unpack_from('<II', h, 4)
     if h[:4] != b'NXSP' or ver not in (1, 2, 3, 4): raise RuntimeError(f'{path} has an unsupported shader pack')
     old_stride = 44 if ver >= 3 else 32; compressed = ver in (2, 4)
     old_index = src.read(old_stride * na)
     has_gl = ver >= 3 or add_ver >= 3; new_stride = 44 if has_gl else 32; new_ver = (4 if compressed else 3) if has_gl else (2 if compressed else 1)
     index_delta = (new_stride - old_stride) * na + new_stride * nb
-    end = os.fstat(src.fileno()).st_size + index_delta; rows = []; blobs = []
+    end = os.fstat(src.fileno()).st_size + index_delta; rows = []
     for i in range(na):
         e = old_index[old_stride * i:old_stride * (i + 1)]
         so, sl, ro, rl = struct.unpack_from('<QIQI', e, 8)
@@ -402,31 +405,38 @@ def pak_merge(path, add):   # merge a new uncompressed shader pack into the exis
             go, gl = struct.unpack_from('<QI', e, 32) if old_stride == 44 else (0, 0)
             row += [go + index_delta if gl else 0, gl]
         rows.append(tuple(row))
-    for i in range(nb):
-        e = b[28 + add_stride * i:28 + add_stride * (i + 1)]
-        so, sl, ro, rl = struct.unpack_from('<QIQI', e, 8); row = [e[:8]]
-        pairs = [(so, sl), (ro, rl)]
-        if add_stride == 44: pairs.append(struct.unpack_from('<QI', e, 32))
-        elif has_gl: pairs.append((0, 0))
-        for o, l in pairs:
-            if not l: row += [0, 0]; continue
-            blob = b[o:o + l]
-            if len(blob) != l: raise RuntimeError(f'{add} has a truncated shader blob')
-            if compressed: blob = struct.pack('<I', l) + zlib.compress(blob, 9)
-            row += [end, len(blob)]; blobs.append(blob); end += len(blob)
-        rows.append(tuple(row))
-    rows.sort(key=lambda r: r[0]); tmp = path + '.new'
-    with open(tmp, 'wb') as out:
-        out.write(h[:4] + struct.pack('<II', new_ver, na + nb) + h[12:28])
-        for row in rows:
-            out.write(row[0] + (struct.pack('<QIQIQI', *row[1:]) if has_gl else struct.pack('<QIQI', *row[1:])))
-        src.seek(28 + old_stride * na)
-        while True:
-            chunk = src.read(1 << 24)
-            if not chunk: break
-            out.write(chunk)
-        for blob in blobs: out.write(blob)
-    src.close(); os.replace(tmp, path)
+    tmp = path + '.new'
+    try:
+        with open(tmp, 'wb') as out:
+            out.write(bytes(28 + new_stride * (na + nb)))   # the header and the sorted index once the new shaders' places are known (below)
+            src.seek(28 + old_stride * na)
+            while True:
+                chunk = src.read(1 << 24)
+                if not chunk: break
+                out.write(chunk)
+            for i in range(nb):
+                e = add_index[add_stride * i:add_stride * (i + 1)]
+                so, sl, ro, rl = struct.unpack_from('<QIQI', e, 8); row = [e[:8]]
+                pairs = [(so, sl), (ro, rl)]
+                if add_stride == 44: pairs.append(struct.unpack_from('<QI', e, 32))
+                elif has_gl: pairs.append((0, 0))
+                for o, l in pairs:
+                    if not l: row += [0, 0]; continue
+                    fa.seek(o); blob = fa.read(l)
+                    if len(blob) != l: raise RuntimeError(f'{add} has a truncated shader blob')
+                    if compressed: blob = struct.pack('<I', l) + zlib.compress(blob, 9)
+                    row += [end, len(blob)]; out.write(blob); end += len(blob)
+                rows.append(tuple(row))
+            rows.sort(key=lambda r: r[0])
+            out.seek(0); out.write(h[:4] + struct.pack('<II', new_ver, na + nb) + h[12:28])
+            for row in rows:
+                out.write(row[0] + (struct.pack('<QIQIQI', *row[1:]) if has_gl else struct.pack('<QIQI', *row[1:])))
+    except BaseException:
+        try: os.remove(tmp)
+        except OSError: pass
+        raise
+    finally: src.close(); fa.close()
+    os.replace(tmp, path)
 
 def trinity_index(a, roots, log):
     # Trinity games (Scarlet / Violet) read every file through arc/data.trpfd, the sorted list of its paths' FNV-1a 64 hashes: a mod's loose file is only read once its path
