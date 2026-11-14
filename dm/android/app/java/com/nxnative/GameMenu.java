@@ -49,6 +49,7 @@ public final class GameMenu {
     private static native boolean nativeSetting(String key, String value);
     private static native void nativeEditTouch();
     private static native String nativeLsfgImport(byte[] dll, String dir);
+    private static native byte[] nativeCheatInfo();   // android_main.c → cheats.c dm_cheats_info
     private static native String nativeFramegenNote();   // android_main.c: "" making pictures (or off), "paused:<fps>", "slow:<ms>", "cost:<fps>", "off"
     // why frame generation makes no pictures right now, for the player; null when it does (or the engine is not running)
     private static String framegenNote(Activity a) {
@@ -79,7 +80,7 @@ public final class GameMenu {
     // ---------- the panel ----------
     private static Dialog dlg; private static Activity act; private static LinearLayout rail, body; private static ScrollView scroll; private static TextView status;
     private static String page = "display"; private static final Set<String> RESTART = new HashSet<>();   // settings changed that apply from the next start
-    private static final String[][] TABS = { { "display", "Display" }, { "perf", "Performance" }, { "controls", "Controls" }, { "mods", "Mods" }, { "saves", "Saves" },
+    private static final String[][] TABS = { { "display", "Display" }, { "perf", "Performance" }, { "controls", "Controls" }, { "mods", "Mods" }, { "cheats", "Cheats" }, { "saves", "Saves" },
                                              { "online", "Online" }, { "system", "System" }, { "about", "About" } };
 
     // android_main.c: what 0 = the menu, 1 = the controller buttons
@@ -129,7 +130,7 @@ public final class GameMenu {
     private static void go(String p) {
         page = p; Activity a = act; if (a == null || body == null) return;
         rail.removeAllViews();
-        String top = p.equals("remap") ? "controls" : p.equals("driver") ? "system" : p.equals("order") ? "mods" : p;
+        String top = p.equals("remap") ? "controls" : p.equals("driver") ? "system" : p.equals("order") ? "mods" : p.equals("cheatadd") ? "cheats" : p;
         for (String[] tb : TABS) {
             boolean on = tb[0].equals(top);
             TextView r = text(a, t(a, tb[1]), 15, on ? TEXT : SUB, on); r.setPadding(dp(a, 14), dp(a, 11), dp(a, 10), dp(a, 11));
@@ -145,6 +146,8 @@ public final class GameMenu {
             case "remap": remap(a); break;
             case "mods": mods(a); break;
             case "order": order(a); break;
+            case "cheats": cheats(a); break;
+            case "cheatadd": cheatAdd(a); break;
             case "saves": saves(a); break;
             case "online": online(a); break;
             case "driver": driver(a); break;
@@ -440,6 +443,92 @@ public final class GameMenu {
         return t(a, "Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s %s).",
                  a.getPackageName(), GameSettings.game(a)[1], GameSettings.version(a));
     }
+    // ---------- cheats ----------
+    // <files>/cheats/*.txt in the Atmosphère format the Switch emulators read ([Name], then 8-digit hex codes; {Name} = a master code, always on); which are on is
+    // cheats/toggles.txt ("[Name]" then "true"). The engine (cheats.c) runs the switched-on ones 12 times a second; a switch applies at once (nativeSetting DM_CHEATS).
+    // A file named after a build ID (16 hex digits) is only used by that game version. Local play is off while a cheat is on.
+    private static File cheatsDir(Activity a) { File d = new File(GameSettings.dir(a), "cheats"); d.mkdirs(); return d; }
+    private static final class Cheat { String file, name, state; boolean master, on; }
+    private static String cheatBuild = "";
+    private static List<Cheat> cheatList() {
+        List<Cheat> out = new ArrayList<>(); byte[] b; try { b = nativeCheatInfo(); } catch (UnsatisfiedLinkError e) { b = null; } if (b == null) return out;
+        String[] ls = new String(b, java.nio.charset.StandardCharsets.UTF_8).split("\n"); cheatBuild = ls.length > 0 ? ls[0].trim() : "";
+        for (int i = 1; i < ls.length; i++) { String[] f = ls[i].split("\t", -1); if (f.length < 5) continue;
+            Cheat c = new Cheat(); c.file = f[0]; c.name = f[1]; c.master = f[2].equals("1"); c.on = f[3].equals("1"); c.state = f[4]; out.add(c); }
+        return out;
+    }
+    private static void reloadCheats() { nativeSetting("DM_CHEATS", "reload"); }
+    // toggles.txt rewritten from the switches as they are, with the names in names switched on (or off)
+    private static void saveToggles(Activity a, List<Cheat> cs, Set<String> names, boolean on) {
+        StringBuilder sb = new StringBuilder(); Set<String> done = new HashSet<>();
+        for (Cheat c : cs) if (!c.master && done.add(c.name)) sb.append('[').append(c.name).append("]\n").append(names.contains(c.name) ? on : c.on).append("\n\n");
+        for (String n : names) if (done.add(n)) sb.append('[').append(n).append("]\n").append(on).append("\n\n");
+        try (OutputStream o = new FileOutputStream(new File(cheatsDir(a), "toggles.txt"))) { o.write(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)); } catch (IOException e) { }
+    }
+    private static Set<String> cheatNames(String text) {   // the [Name]s in a cheat file's text
+        Set<String> n = new java.util.LinkedHashSet<>();
+        for (String l : text.split("\n")) { l = l.trim(); int e = l.lastIndexOf(']'); if (l.startsWith("[") && e > 1) n.add(l.substring(1, e)); }
+        return n;
+    }
+    private static void cheats(Activity a) {
+        List<Cheat> cs = cheatList(); int on = 0; for (Cheat c : cs) if (c.on && !c.master && !c.state.equals("bad")) on++;
+        heading(a, t(a, "Cheats (%d on)", on));
+        LinearLayout top = new LinearLayout(a); body.addView(top);
+        button(a, top, t(a, "Add cheats"), true, () -> go("cheatadd"));
+        button(a, top, t(a, "Import a cheat file (.txt)"), false, () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_CHEAT));
+        if (on > 0) note(a, t(a, "Local play is off while a cheat is on."));
+        if (cs.isEmpty()) { note(a, t(a, "No cheats yet.") + " " + cheatWhere(a)); return; }
+        String file = null;
+        for (Cheat c : cs) {
+            if (!c.file.equals(file)) { file = c.file; final String f = file;
+                LinearLayout r = new LinearLayout(a); r.setGravity(Gravity.CENTER_VERTICAL); body.addView(r);
+                TextView h = text(a, f, 13, SUB, true); h.setPadding(dp(a, 6), dp(a, 12), 0, dp(a, 4)); r.addView(h, new LinearLayout.LayoutParams(0, -2, 1));
+                button(a, r, t(a, "Delete"), false, () -> confirm(a, t(a, "Delete %s from the phone?", f), () -> { new File(cheatsDir(a), f).delete(); reloadCheats(); go("cheats"); })); }
+            LinearLayout k = card(a); LinearLayout row = titleRow(a, k, c.name, c.master ? t(a, "Always on") : null);
+            if (!c.master) row.addView(pill(a, c.on ? t(a, "On") : t(a, "Off"), c.on));
+            String w = c.state.equals("bad") ? t(a, "Uses a code the cheat engine does not know: left out.") : c.state.equals("fail") ? t(a, "Reached outside the game's memory: it may be made for another version.") : null;
+            if (w != null) { TextView x = text(a, "⚠ " + w, 13, WARN, false); x.setPadding(0, dp(a, 4), 0, 0); k.addView(x); }
+            if (!c.master) k.setOnClickListener(v -> { saveToggles(a, cs, java.util.Collections.singleton(c.name), !c.on); reloadCheats(); redraw(); });
+        }
+        note(a, cheatWhere(a));
+    }
+    private static String cheatWhere(Activity a) {
+        String b = cheatBuild.isEmpty() ? "" : " " + t(a, "This game's build ID: %s.", cheatBuild.toUpperCase(java.util.Locale.ROOT));
+        return t(a, "Cheats in the Atmosphère format ([Name], then its codes), made for %s %s. Files go in Android/data/%s/files/%s/cheats/.",
+                 GameSettings.game(a)[1], GameSettings.version(a), a.getPackageName(), GameSettings.dir(a).getName()) + b;
+    }
+    private static String cheatFile() { return cheatBuild.length() == 16 ? cheatBuild.toUpperCase(java.util.Locale.ROOT) + ".txt" : "cheats.txt"; }
+    // add by typing or pasting: a name and its codes, or a whole file's text with its own [Name]s; the new ones switched on
+    private static void cheatAdd(Activity a) {
+        heading(a, t(a, "Add cheats"));
+        LinearLayout c = card(a); EditText name = field(a, c, t(a, "Name (when the codes have no [Name] line)"));
+        EditText codes = field(a, c, "04000000 01234567 00000063"); codes.setSingleLine(false); codes.setMinLines(6); codes.setTypeface(Typeface.MONOSPACE);
+        codes.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        note(a, t(a, "Paste codes from a cheat list for %s %s. Each code is 8 hex digits.", GameSettings.game(a)[1], GameSettings.version(a)));
+        LinearLayout r = new LinearLayout(a); body.addView(r);
+        button(a, r, t(a, "Save"), true, () -> {
+            String txt = codes.getText().toString().replace("\r", "").trim(); if (txt.isEmpty()) { say(t(a, "No codes to save.")); return; }
+            if (!txt.startsWith("[") && !txt.startsWith("{")) { String n = name.getText().toString().replaceAll("[\\[\\]{}\\n]", "").trim(); if (n.isEmpty()) n = t(a, "My cheat"); txt = "[" + n + "]\n" + txt; }
+            List<Cheat> before = cheatList();
+            try (OutputStream o = new FileOutputStream(new File(cheatsDir(a), cheatFile()), true)) { o.write(("\n" + txt + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8)); }
+            catch (IOException e) { say(t(a, "Could not save the cheats: %s", e.getMessage())); return; }
+            saveToggles(a, before, cheatNames(txt), true); reloadCheats(); go("cheats"); say(t(a, "Cheats saved and switched on."));
+        });
+        button(a, r, t(a, "Cancel"), false, () -> go("cheats"));
+    }
+    private static String importCheats(Activity a, Uri u) throws IOException {
+        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+        try (InputStream in = a.getContentResolver().openInputStream(u)) { byte[] b = new byte[1 << 16]; int k; long tot = 0;
+            while ((k = in.read(b)) > 0) { bo.write(b, 0, k); if ((tot += k) > (1L << 20)) throw new IOException("the file is too large for a cheat file"); } }
+        String txt = new String(bo.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+        if (cheatNames(txt).isEmpty() && !txt.contains("{")) throw new IOException("no [Name] lines: not a cheat file in the Atmosphère format");
+        String name = displayName(a, u).replaceAll("[^A-Za-z0-9 ._()\\[\\]-]", "_").trim(); if (!name.toLowerCase(java.util.Locale.ROOT).endsWith(".txt")) name += ".txt";
+        if (name.equalsIgnoreCase("toggles.txt") || name.startsWith(".")) name = "imported.txt";
+        try (OutputStream o = new FileOutputStream(new File(cheatsDir(a), name))) { o.write(bo.toByteArray()); }
+        reloadCheats(); int n = 0; for (Cheat c : cheatList()) if (c.file.equals(name) && !c.master) n++;
+        if (n == 0) return t(a, "%s holds no cheats for this game version (it is named after another build).", name);
+        return t(a, "Imported %d cheat(s) from %s. Tap one to switch it on.", n, name);
+    }
     // the load order: higher wins; each mod's notes, the files it shares, moving it, deleting it
     private static void order(Activity a) {
         List<File> ms = modList(a); Map<File, Map<File, Integer>> cf = conflicts(ms);
@@ -634,7 +723,7 @@ public final class GameMenu {
     }
 
     // ---------- files: save data out and in, mods and drivers in (the system file picker; GameActivity.onActivityResult hands the answer here) ----------
-    static final int REQ_EXPORT = 101, REQ_IMPORT = 102, REQ_MOD = 103, REQ_DRIVER = 104, REQ_LSFG = 105;
+    static final int REQ_EXPORT = 101, REQ_IMPORT = 102, REQ_MOD = 103, REQ_DRIVER = 104, REQ_LSFG = 105, REQ_CHEAT = 106;
     private static void pick(Activity a, String action, String name, int req) {
         // (to open, any file: ZIPs saved by browsers and chat apps are often typed otherwise, and the picker greyed them out; a save ZIP is checked when read)
         Intent i = new Intent(action); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType(Intent.ACTION_OPEN_DOCUMENT.equals(action) ? "*/*" : "application/zip");
@@ -642,13 +731,14 @@ public final class GameMenu {
         a.startActivityForResult(i, req);
     }
     static boolean onResult(Activity a, int req, int res, Intent data) {
-        if (req != REQ_EXPORT && req != REQ_IMPORT && req != REQ_MOD && req != REQ_DRIVER && req != REQ_LSFG) return false;
+        if (req != REQ_EXPORT && req != REQ_IMPORT && req != REQ_MOD && req != REQ_DRIVER && req != REQ_LSFG && req != REQ_CHEAT) return false;
         Uri u = res == Activity.RESULT_OK && data != null ? data.getData() : null; if (u == null) return true;
         File files = GameSettings.dir(a);
         new Thread(() -> {
             String msg;
             try {
                 if (req == REQ_DRIVER) msg = DriverPackages.install(a, u, displayName(a, u));
+                else if (req == REQ_CHEAT) msg = importCheats(a, u);
                 else if (req == REQ_LSFG) {   // the DLL read whole (about 3 MB), its shaders converted into files/lsfg (android_main.c DM_LSFG_DIR)
                     java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
                     try (InputStream in = a.getContentResolver().openInputStream(u)) { byte[] b = new byte[1 << 16]; int k; long tot = 0;
@@ -670,11 +760,11 @@ public final class GameMenu {
                         msg = t(a, "Mod \"%s\" installed (%d files). It is used from the next start.", name, n); }
                 }
             } catch (IOException | SecurityException e) {
-                msg = t(a, req == REQ_EXPORT ? "Could not export the save: %s" : req == REQ_IMPORT ? "Could not import the save: %s" : "Could not install the mod: %s", e.getMessage()); }
+                msg = t(a, req == REQ_EXPORT ? "Could not export the save: %s" : req == REQ_IMPORT ? "Could not import the save: %s" : "Could not install the mod: %s", e.getMessage()); if (req == REQ_CHEAT) msg = t(a, "Could not import the cheats: %s", e.getMessage()); }
             final String m = msg;
             a.runOnUiThread(() -> {   // (the answer in the panel's status line, on the page it belongs to)
                 if (dlg == null) open(a, null);
-                if (req == REQ_MOD) { RESTART.add("mods"); go("mods"); } else if (req == REQ_DRIVER) go("driver"); else if (req == REQ_LSFG) redraw(); else go("saves");
+                if (req == REQ_MOD) { RESTART.add("mods"); go("mods"); } else if (req == REQ_CHEAT) go("cheats"); else if (req == REQ_DRIVER) go("driver"); else if (req == REQ_LSFG) redraw(); else go("saves");
                 say(m);
             });
         }).start();

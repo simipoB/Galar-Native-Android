@@ -50,6 +50,15 @@ void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry
 // Timed presses from the host itself (the Android touch menu driver, touch_menu.c): buttons held until the given time, ORed with the other sources
 static _Atomic uint64_t g_auto_btn, g_auto_until;
 void dm_input_press(uint64_t buttons, uint64_t hold_ns) { atomic_store(&g_auto_until, now_ns() + hold_ns); atomic_store(&g_auto_btn, buttons); atomic_fetch_or(&g_latch, buttons); }
+// the buttons held now from every source, with the stick directions (NpadButton 16..23): the cheat engine's key conditions (cheats.c, opcode 8)
+uint64_t dm_input_held(void) {
+    uint64_t b = atomic_load(&g_btn) | atomic_load(&g_pad_btn); if (now_ns() < atomic_load(&g_auto_until)) b |= atomic_load(&g_auto_btn);
+    uint64_t ax[2] = { atomic_load(&g_axes), atomic_load(&g_pad_axes) };
+    for (int i = 0; i < 2; i++) { int16_t lx = (int16_t)ax[i], ly = (int16_t)(ax[i] >> 16), rx = (int16_t)(ax[i] >> 32), ry = (int16_t)(ax[i] >> 48);
+        if (lx < -STICK_THRESH) b |= 1ull << 16; if (ly > STICK_THRESH) b |= 1ull << 17; if (lx > STICK_THRESH) b |= 1ull << 18; if (ly < -STICK_THRESH) b |= 1ull << 19;
+        if (rx < -STICK_THRESH) b |= 1ull << 20; if (ry > STICK_THRESH) b |= 1ull << 21; if (rx > STICK_THRESH) b |= 1ull << 22; if (ry < -STICK_THRESH) b |= 1ull << 23; }
+    return b;
+}
 uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
 // DM_KEYS scripted input (for tests): "seconds:key[+key][~hold seconds][*count/interval seconds],...", e.g. "8:A,12:A,15:Down~0.5,16:A+B,40:A*80/2" (A every 2 s from 40 s on, 80 times). Key names A B X Y LS RS L R ZL ZR (plus the sticks LLeft LUp LRight LDown and RLeft RUp RRight RDown) Plus Minus Left Up Right Down, left stick LLeft LUp LRight LDown,
 //   and T<x>x<y> = a touch at normalized picture coordinates (origin top left) for the hold time;

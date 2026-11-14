@@ -45,7 +45,8 @@ static long vsend(int fd, const void *b, size_t n, uint32_t ip, uint16_t port) {
 
 static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static void ev(void) { if (g_ev) hle_signal_system_event(g_ev); }
-static int mods_on(void) { const char *m = getenv("DM_MODS_ACTIVE"); return m && atoi(m) > 0; }
+int dm_cheats_enabled(void);   // cheats.c
+static int mods_on(void) { const char *m = getenv("DM_MODS_ACTIVE"); return (m && atoi(m) > 0) || dm_cheats_enabled() > 0; }   // (cheats count as mods)
 static int family(uint64_t a, uint64_t b) {   // the same game, or Sword with Shield (their local play is one)
     uint64_t sw = 0x0100ABF008968000ull, sh = 0x01008DB008C2C000ull;
     return a == b || ((a == sw || a == sh) && (b == sw || b == sh));
@@ -211,7 +212,7 @@ HLE_FORCE("_ZN2nn3ldn10InitializeEv", "local wireless over the phone's Wi-Fi (of
     pthread_mutex_lock(&g_mu); Result r = RES_OK;
     const char *off = getenv("DM_LDN");
     if (off && !strcmp(off, "0")) { LOG("[ldn] local play is off (DM_LDN=0)"); r = RES_FAIL; }
-    else if (mods_on()) { LOG("[RED] [ldn] local play is off while mods are on: switch them off in the menu, Mods (play with others only on the unmodified game)"); r = RES_FAIL; }
+    else if (mods_on()) { LOG("[RED] [ldn] local play is off while mods or cheats are on: switch them off in the menu, Mods / Cheats (play with others only on the unmodified game)"); r = RES_FAIL; }
     else if ((g_relay = getenv("DM_RELAY_ROOM") && *getenv("DM_RELAY_ROOM")) && !relay_start()) { LOG("[RED] [ldn] the online room could not be joined (see [relay] above): local play is off"); r = RES_FAIL; }
     else if (g_relay) { g_ip = relay_vip(); g_mask = 0xFFFF0000u; relay_on_left(peer_left); for (int k = 0; k < MAXN; k++) g_member[k] = -1; g_state = ST_INIT; g_reason = 0;
         struct in_addr a = { htonl(g_ip) }; LOG("[ldn] local play over the online room, this phone %s", inet_ntoa(a)); }
@@ -220,6 +221,7 @@ HLE_FORCE("_ZN2nn3ldn10InitializeEv", "local wireless over the phone's Wi-Fi (of
            for (int k = 0; k < MAXN; k++) g_member[k] = -1; g_state = ST_INIT; g_reason = 0; struct in_addr a = { htonl(g_ip) }; LOG("[ldn] local play over Wi-Fi, this phone %s", inet_ntoa(a)); }
     pthread_mutex_unlock(&g_mu); return r;
 }
+int dm_ldn_in_session(void) { int s = g_state; return s == ST_AP || s == ST_AP_CREATED || s == ST_STATION || s == ST_CONNECTED; }   // (cheats.c: no cheats while playing with others)
 HLE_FORCE("_ZN2nn3ldn8FinalizeEv", "local wireless: everything closed", void, h_ldn_Fini, void) { pthread_mutex_lock(&g_mu); teardown_locked(); g_state = ST_NONE; pthread_mutex_unlock(&g_mu); }
 HLE_FORCE("_ZN2nn3ldn8GetStateEv", "local wireless state", int, h_ldn_State, void) { return g_state; }
 HLE_FORCE("_ZN2nn3ldn22AttachStateChangeEventEPNS_2os15SystemEventTypeE", "local wireless state event: fires on every change", void, h_ldn_Attach, void *e) { hle_bind_system_event(e, 0); g_ev = e; }
