@@ -674,6 +674,8 @@ uint32_t *spv_fmz(const uint32_t *code, size_t words, size_t *out_words) {
     free(nc); free(used); free(comp); free(zid); o[3] = next; *out_words = w; return o;
 none:
     free(nc); free(used); free(comp); free(zid); return NULL;
+}
+
 // Maxwell's special functions have exact answers where SPIR-V's are undefined: MUFU.LG2 gives -inf for 0 and NaN for a negative number, MUFU.EX2 0 below 2^-126 (it flushes
 // the denormal) and +inf above 2^128, MUFU.RSQ +inf for 0 and NaN for a negative number, and F2I clamps to the integer's range with NaN giving 0. GLSL.std.450 Log2 / Exp2 /
 // InverseSqrt / Sqrt and OpConvertFToU / FToS leave those cases to the driver, and a driver with fast approximations may answer anything there. The translated lighting
