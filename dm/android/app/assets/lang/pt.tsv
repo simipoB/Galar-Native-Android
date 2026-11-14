@@ -374,3 +374,4 @@ NaN fix	Correção NaN
 NaN fix + textures	Correção NaN + texturas
 NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	Correção NaN: os valores quebrados que os shaders escrevem viram 0 em vez de deixar a imagem branca. Conte-nos como ficou
 NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	Correção NaN + texturas: o mesmo, e os valores quebrados lidos de texturas também viram 0. Conte-nos como ficou
+This version translates the game's shaders differently: updating them now. Your files aren't needed and your save is kept. Keep this screen open; it takes about as long as the shader step of a setup.	Esta versão traduz os shaders do jogo de outro jeito: atualizando agora. Seus arquivos não são necessários e seu save é mantido. Deixe esta tela aberta; leva o mesmo tempo que a etapa de shaders da instalação.

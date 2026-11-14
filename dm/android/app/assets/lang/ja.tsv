@@ -374,3 +374,4 @@ NaN fix	NaN修正
 NaN fix + textures	NaN修正＋テクスチャ
 NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	NaN修正：シェーダーが書き込む壊れた値を、画面を白くする代わりに0にします。見た目を教えてください
 NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	NaN修正＋テクスチャ：同じ処理に加え、テクスチャから読んだ壊れた値も0にします。見た目を教えてください
+This version translates the game's shaders differently: updating them now. Your files aren't needed and your save is kept. Keep this screen open; it takes about as long as the shader step of a setup.	このバージョンではゲームのシェーダーの変換方法が変わりました：今すぐ更新します。ファイルは不要で、セーブデータはそのままです。この画面を開いたままにしてください。セットアップのシェーダー手順と同じくらい時間がかかります。

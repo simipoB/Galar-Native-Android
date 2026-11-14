@@ -142,13 +142,29 @@ public final class SetupActivity extends Activity {
         else if (!running && !asked && GameSettings.games(this).size() > 1 && !readyGames().isEmpty()) { launcher(official); return; }
         else if (!running && !asked) { List<String> ready = readyGames(); if (ready.size() == 1) GameSettings.choose(this, ready.get(0)); else if (ready.size() > 1) asked = true; }
         cleanLeftovers();   // (before the game may start straight away: a stopped setup's leftovers, in the background)
-        if (new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists() && !packComplete(gameDir()))   // (a fast setup's pack: packComplete)
+        if (new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists() && !packComplete(gameDir()) && !shadersOnly())   // (a fast setup's pack: packComplete)
             Toast.makeText(this, T.t(this, "The last setup translated only part of the game's shaders, so parts of the game were not drawn. Tap Set up once more: it finishes them (the ones already done are kept)."), Toast.LENGTH_LONG).show();
         if (ready()) setupShortcut();
         if (ready() && !asked && !running && notices()) asked = true;   // the last run crashed starting its graphics: this screen offers a driver instead of starting the game
         if (ready() && !asked && !running) { gameIcon(); if (!pendingWork(gameDir())) { startGame(); return; } }
         setupScreen(official);
         if (ready() && !asked) startCaptures();
+        else if (!running && shadersOnly()) startShadersOnly();
+    }
+    // A game set up before whose shaders this app version translates differently (its ready file names another chain), or whose pack is only partly there (packComplete):
+    //   only the shaders are made again, from what the earlier setup left in the game's folder (RomFS/, patched/main.patched.bin; setup_game.py --shaders-only). No files
+    //   to choose and nothing unpacked: before, every such update asked the player to choose their dump and set up again (v0.81, v0.83, v0.84)
+    private boolean shadersOnly() {
+        File d = gameDir();
+        return new File(d, "ready").exists() && new File(d, "RomFS").isDirectory() && new File(new File(d, "patched"), "main.patched.bin").isFile()
+            && (!chainCurrent() || !new File(d, "shaders.pak").exists() || !packComplete(d));
+    }
+    private void startShadersOnly() {
+        if (running) return;
+        bar.setMax(600); bar.setProgress(200);
+        status.setText(T.t(this, "This version translates the game's shaders differently: updating them now. Your files aren't needed and your save is kept. Keep this screen open; it takes about as long as the shader step of a setup."));
+        List<String> cmd = new ArrayList<>(); cmd.add("--shaders-only");
+        resumes = 0; workerCap = 0; runFullSetup(cmd);
     }
     // The setup screen, in the launcher's look: what a player sees first after installing. Three numbered steps (game files, keys, set up), then Play once the game is
     //   set up; the rest (which game, save data, the home screen shortcut, the graphics driver) under them, the driver folded away until asked for
@@ -410,7 +426,7 @@ public final class SetupActivity extends Activity {
         saveBox.setVisibility(setUp() || iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
         if (running && status.getText().length() == 0)   // a new screen while the setup (or a copy) another one started still runs
             status.setText(T.t(this, "Setup is still running in the background. Wait a few minutes, then close and reopen the app to see whether it has finished."));
-        if (!running && setUp() && !chainCurrent() && status.getText().length() == 0)
+        if (!running && setUp() && !chainCurrent() && !shadersOnly() && status.getText().length() == 0)
             status.setText(T.t(this, "This app version translates the game's shaders differently: choose your files and press Set up the game again (the save data is kept)."));
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
