@@ -360,3 +360,17 @@ On: a picture is made between each two of the game's frames, so 60 fps moves lik
 Auto: 2x, light (the game at a locked 60 shown at 120)	Auto: 2x, ligero (el juego a 60 estables mostrado a 120)
 Widescreen	Panorámica
 Widescreen: the game's camera made as wide as your screen, nothing stretched (Sword / Shield 1.3.2; the HUD is stretched)	Panorámica: la cámara del juego tan ancha como tu pantalla, sin estirar nada (Sword / Shield 1.3.2; la interfaz se estira)
+Output	Salida
+Float target	Destino flotante
+Output: what each shader writes is limited. If the white goes away, tell us	Salida: lo que escribe cada sombreador se limita. Si el blanco desaparece, avísanos
+Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	Destino flotante: la escena iluminada se guarda en una imagen de 16 bits en coma flotante en lugar de la compacta. Si el blanco desaparece, avísanos
+Multiplies	Multiplicaciones
+Additions	Sumas
+Multiply-adds	Multiplicar-sumar
+Multiplies: every multiply result is limited. If the white goes away, tell us	Multiplicaciones: cada resultado de multiplicación se limita. Si el blanco desaparece, avísanos
+Additions: every add / subtract result is limited. If the white goes away, tell us	Sumas: cada resultado de suma o resta se limita. Si el blanco desaparece, avísanos
+Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	Multiplicar-sumar: cada resultado de multiplicación-suma se limita. Si el blanco desaparece, avísanos
+NaN fix	Arreglo NaN
+NaN fix + textures	Arreglo NaN + texturas
+NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	Arreglo NaN: los valores rotos que escriben los sombreadores pasan a 0 en lugar de volver blanca la imagen. Cuéntanos cómo se ve
+NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	Arreglo NaN + texturas: lo mismo, y los valores rotos leídos de texturas también pasan a 0. Cuéntanos cómo se ve

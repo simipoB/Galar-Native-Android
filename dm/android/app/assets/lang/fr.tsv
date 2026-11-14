@@ -360,3 +360,17 @@ On: a picture is made between each two of the game's frames, so 60 fps moves lik
 Auto: 2x, light (the game at a locked 60 shown at 120)	Auto : 2x, léger (le jeu à 60 stables affiché à 120)
 Widescreen	Grand écran
 Widescreen: the game's camera made as wide as your screen, nothing stretched (Sword / Shield 1.3.2; the HUD is stretched)	Grand écran : la caméra du jeu aussi large que votre écran, rien n'est étiré (Sword / Shield 1.3.2 ; l'interface est étirée)
+Output	Sortie
+Float target	Cible flottante
+Output: what each shader writes is limited. If the white goes away, tell us	Sortie : ce que chaque shader écrit est limité. Si le blanc disparaît, dites-le-nous
+Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	Cible flottante : la scène éclairée est stockée dans une image flottante 16 bits au lieu de l'image compacte. Si le blanc disparaît, dites-le-nous
+Multiplies	Multiplications
+Additions	Additions
+Multiply-adds	Multiplications-additions
+Multiplies: every multiply result is limited. If the white goes away, tell us	Multiplications : chaque résultat de multiplication est limité. Si le blanc disparaît, dites-le-nous
+Additions: every add / subtract result is limited. If the white goes away, tell us	Additions : chaque résultat d'addition / soustraction est limité. Si le blanc disparaît, dites-le-nous
+Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	Multiplications-additions : chaque résultat de multiplication-addition est limité. Si le blanc disparaît, dites-le-nous
+NaN fix	Correctif NaN
+NaN fix + textures	Correctif NaN + textures
+NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	Correctif NaN : les valeurs cassées écrites par les shaders deviennent 0 au lieu de rendre l'image blanche. Dites-nous ce que ça donne
+NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	Correctif NaN + textures : pareil, et les valeurs cassées lues dans les textures deviennent 0 aussi. Dites-nous ce que ça donne
