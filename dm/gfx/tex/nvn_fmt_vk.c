@@ -86,7 +86,7 @@ int nvn_fmt_vk_transcode(int f) { int k = nvn_fmt_vk_decode(f); return g_etc && 
 //   R11G11B10F targets as RGBA16F. Images and their views change together (both come through here); the texel grows from 4 to 8 bytes
 static int g_b10_rgba16;
 void nvn_fmt_vk_b10_as_rgba16(int on) { g_b10_rgba16 = on; }
-int nvn_fmt_vk_b10_swapped(int f) { return f == 0x3F && g_b10_rgba16; }
+int nvn_fmt_vk_b10_swapped(int f) { return f == 0x3F && (g_b10_rgba16 || g_r11f16); }
 int nvn_fmt_to_vk(int f, uint32_t *vk, uint8_t swz[4]) {
     ent e = {0, 0, 0, 0};
     if (f >= 0x79 && f <= 0x94) { int k = (f - 0x79) % 14; e = (ent){(uint16_t)(ASTC0 + 2 * k + (f >= 0x87)), 1, 0, 0}; }
