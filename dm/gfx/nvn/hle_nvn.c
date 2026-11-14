@@ -1607,14 +1607,16 @@ static void vstep_tick(const win_t *o) {
     // at most 2 slots: 30 fps is the floor, 60 when frames fit (a 3-slot hold, 20 fps, swung the picture between 20 and 60). The live target 30 holds every frame 2
     int k0 = g_vs.k, n = nvn_fstep_next(&g_vs, shown, cost, live_fps() == 30 ? 2 : 1, 2, 0);
     uint32_t ns = (uint32_t)(((uint64_t)n * 1000000000ull + (uint64_t)dm_step_hz - 1) / (uint64_t)dm_step_hz);
-    // The game's step follows real time (loader.c fps_patch, dm_step_table): the time since the last frame's start, in whole slots, up to 50 ms, the part of a
+    // The game's step follows real time (loader.c fps_patch, dm_step_table): the time since the last frame's start, in whole slots, up to 33.3 ms, the part of a
     //   slot left over carried into the next frame and anything over the cap dropped; every entry of the table gets it, so whichever the game picks from its own
-    //   measures, game time = real time down to 20 fps. Presentation still holds frames k slots (above).
+    //   measures, game time = real time down to 30 fps. Presentation still holds frames k slots (above).
     //   The cap was 83.3 ms (the longest step the game's own table has), but the game was never tuned for steps that long: on a phone at 13-14 fps (#232,
-    //   Snapdragon 4 Gen 2) every step was 67-83 ms and the player walked through a wall at the Motostoke stairs. Below 20 fps the game now runs slower
-    //   than real time (14 fps: ~70 %) instead of taking steps the collision can miss. DM_GAME_STEP_MAX_MS=17..84 changes the cap (84 = the old behaviour).
+    //   Snapdragon 4 Gen 2) every step was 67-83 ms and the player walked through a wall at the Motostoke stairs. 50 ms was still too long: on a bike at
+    //   18-22 fps (#245, Snapdragon 7s Gen 2, v0.83) every step was 50 ms and the player rode through walls. 33.3 ms is the step the game takes at its own
+    //   30 fps on the Switch, the longest it was built for; below 30 fps the game runs slower than real time (20 fps: ~67 %), as it does on the Switch, instead
+    //   of taking steps the collision can miss. DM_GAME_STEP_MAX_MS=17..84 changes the cap (50 = v0.82-v0.83, 84 = before).
     //   DM_GAME_STEP=fixed: only the interval-2 entry, with the hold's step, as before
-    { extern uint8_t *dm_step_table __attribute__((weak)); static int fixed = -1; static double acc, game_sum, real_sum, cap_ms = 50;
+    { extern uint8_t *dm_step_table __attribute__((weak)); static int fixed = -1; static double acc, game_sum, real_sum, cap_ms = 100.0 / 3;
       if (fixed < 0) { const char *e = getenv("DM_GAME_STEP"); fixed = e && !strcmp(e, "fixed");
           const char *c = getenv("DM_GAME_STEP_MAX_MS"); if (c && *c) { double m = atof(c); if (m >= 17 && m <= 84) cap_ms = m; }
           if (!fixed && &dm_step_table && dm_step_table) LOG("[nvn] game step: real time, whole slots up to %.1f ms, slower than real time below %.0f fps (DM_GAME_STEP=fixed: the hold's step; DM_GAME_STEP_MAX_MS: the cap)", cap_ms, 1000.0 / cap_ms); }
