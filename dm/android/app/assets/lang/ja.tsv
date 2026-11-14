@@ -348,3 +348,8 @@ Vibrant	ビビッド
 Vibrant: muted colours lifted, a touch more contrast (less grey haze)	ビビッド：くすんだ色を鮮やかにし、コントラストを少し強めます（灰色のもやを軽減）
 Cinematic	シネマティック
 Cinematic: stronger contrast, a slightly warm tone	シネマティック：コントラストを強め、やや暖かい色調
+Sticks	スティック
+Fixed	固定
+Fixed: the sticks stay where they are drawn, as on Joy-Cons	固定：スティックは表示された位置にとどまります（Joy-Conと同じ）
+Floating	フローティング
+Floating: touch anywhere on the left half to move (the stick comes to your thumb); drag on the right half to turn the camera	フローティング：画面の左半分のどこに触れても移動できます（スティックが親指の位置に来ます）。右半分をドラッグするとカメラが回ります
