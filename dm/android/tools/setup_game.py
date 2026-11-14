@@ -169,7 +169,7 @@ def main():
         stop5 = threading.Event(); threading.Thread(target=watch_files, args=(vk, '.vkr', max(nspv, 1), stop5), daemon=True).start()
         try: run([py, os.path.join(DM, 'android/tools/vk_meta.py'), built, vk, built])
         finally: stop5.set()
-    keys = os.path.join(a.keys, 'prod.keys')
+    keys = os.path.join(a.keys, 'prod.keys') if a.keys else None
     if not a.shaders_only and not os.path.isfile(keys): raise RuntimeError(f'no prod.keys in {a.keys}')
     ex = os.path.join(a.work, 'extract')
 
