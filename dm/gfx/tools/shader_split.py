@@ -671,8 +671,9 @@ def uniq_keys(found):
     return uniq
 
 def nso_image(path):
-    import lz4.block
     d = open(path, 'rb').read()
+    if d[:4] != b'NSO0': return d   # already an image: the setup's rewritten main (patched/main.patched.bin, setup_game.py --shaders-only)
+    import lz4.block
     flags = struct.unpack_from('<I', d, 0xc)[0]; segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]; csz = struct.unpack_from('<III', d, 0x60)
     img = bytearray(segs[2][1] + segs[2][2])
     for i, (fo, mo, sz) in enumerate(segs):

@@ -120,6 +120,8 @@ def main():
     ap.add_argument('--allow-damaged', action='store_true', help='the unpacker writes files that fail their hash check as read (the setup screen: Set up anyway)')
     ap.add_argument('--live', help='with --captures, while the game runs: the translated shaders also go into this folder for the engine to load at once (nvn_vk.c live_check)')
     ap.add_argument('--mod-shaders', help="the RomFS folders of the mods that are on, ':'-separated: their new shaders translated into the pack")
+    ap.add_argument('--shaders-only', action='store_true', help='translate the shaders again from the game already set up in --out (its RomFS and patched/main.patched.bin): '
+                    'no dump and no keys, for an app version whose shader translation changed')
     ap.add_argument('--resume', action='store_true', help='go on from the shader translation when an earlier run of this setup got that far (resume.json in --work)')
     a = ap.parse_args()
     if a.mod_shaders is not None: return mod_shaders(a)
@@ -127,7 +129,7 @@ def main():
     if a.captures:
         if a.live: live_yield()
         return captures(a)
-    if not (a.keys and a.base): ap.error('--keys and --base are needed (or --captures)')
+    if not a.shaders_only and not (a.keys and a.base): ap.error('--keys and --base are needed (or --captures, or --shaders-only)')
     os.makedirs(a.work, exist_ok=True); os.makedirs(a.out, exist_ok=True)
     log = open(os.path.join(a.work, 'setup.log'), 'a', buffering=1)
     py = sys.executable; env = dict(os.environ, PYTHONUNBUFFERED='1')
@@ -168,13 +170,13 @@ def main():
         try: run([py, os.path.join(DM, 'android/tools/vk_meta.py'), built, vk, built])
         finally: stop5.set()
     keys = os.path.join(a.keys, 'prod.keys')
-    if not os.path.isfile(keys): raise RuntimeError(f'no prod.keys in {a.keys}')
+    if not a.shaders_only and not os.path.isfile(keys): raise RuntimeError(f'no prod.keys in {a.keys}')
     ex = os.path.join(a.work, 'extract')
 
     # --resume (the setup screen, after Android stopped this setup, #51 / #52: exit 137 during the shader translation): resume.json, written once the shader scan is done,
     #   says what steps 1-3 found; the unpacked game, the rewritten code and the scanned shaders are still in place, and the translation goes on from what it had done
     state = os.path.join(a.work, 'resume.json'); resumed = False
-    if a.resume and os.path.isfile(state) and os.path.isfile(os.path.join(ex, 'ExeFS', 'main')) and os.path.isdir(os.path.join(a.work, 'shader_pkg')):
+    if a.resume and os.path.isfile(state) and (a.shaders_only or os.path.isfile(os.path.join(ex, 'ExeFS', 'main'))) and os.path.isdir(os.path.join(a.work, 'shader_pkg')):
         import json
         st = json.load(open(state, encoding='utf-8'))
         a.out = st['out']; games = st['games']; files = st['files']
@@ -182,8 +184,22 @@ def main():
             PROFILE = _game.load(st['game']); NAME = PROFILE.get('name'); env['DM_GAME'] = os.environ['DM_GAME'] = st['game']
             print(f'GAME {st["game"].upper()}', flush=True)
         exefs, romfs, pkg, pat = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS'), os.path.join(a.work, 'shader_pkg'), os.path.join(a.out, 'patched')
+        if a.shaders_only: romfs = os.path.join(a.out, 'RomFS')   # (a shaders-only update reads the game's own RomFS: nothing was unpacked)
         resumed = True; log.write(f'== {time.strftime("%H:%M:%S")} resumed after a stop: steps 1-3 kept, the translation goes on\n')
-    if not resumed:
+    # --shaders-only: an app version whose shader translation changed needs only steps 3-6. The game set up before already holds what they read: RomFS/ (moved there
+    #   at the end of that setup) and the rewritten main (patched/main.patched.bin: the decompressed image with only its code rewritten, so the shaders embedded in its
+    #   data are the dump's own). No dump, no keys, nothing unpacked: the player is not asked for anything (before, every such update meant choosing the files and
+    #   unpacking 12 GB again). The old pack and its ready file stay until the new one is complete
+    main_src = None
+    if not resumed and a.shaders_only:
+        files, games = [], []
+        romfs, exefs = os.path.join(a.out, 'RomFS'), os.path.join(ex, 'ExeFS')
+        main_src, pkg = os.path.join(a.out, 'patched', 'main.patched.bin'), os.path.join(a.work, 'shader_pkg')
+        pat = os.path.join(a.out, 'patched')   # (the Trinity games' shader scan runs the rewritten modules: step 3)
+        if not (os.path.isdir(romfs) and os.path.isfile(main_src)):
+            raise RuntimeError('this game was set up without the files a shaders-only update reads (RomFS, patched/main.patched.bin): choose your files and set it up again')
+        log.write(f'== {time.strftime("%H:%M:%S")} shaders only: from {romfs} and {main_src}\n')
+    elif not resumed:
         step(1)
         if os.path.isdir(ex): shutil.rmtree(ex)
         # the DLC unpacks into the scratch folder first: which game the files are is only known once they are unpacked, and the chosen game's own DLC (another game's
@@ -258,6 +274,7 @@ def main():
             if os.path.isfile(os.path.join(exefs, m)):
                 run([py, os.path.join(DM, 'tools/patch_nso.py'), os.path.join(exefs, m), pat, m], env=dict(env, DM_PATCH_TARGET='android'))
 
+    if not resumed:
         step(3)
         pkg = os.path.join(a.work, 'shader_pkg'); shutil.rmtree(pkg, ignore_errors=True)
         # the shaders an earlier run of the game captured (nvn_capture/ in the game dir, android_main.c DM_NVN_CAPTURE) go into the new pack too: the game saves each
@@ -267,7 +284,7 @@ def main():
         if PROFILE.get('shader_oodle', 'off') == 'on':
             if not os.path.isfile(tool('dmoodle')): raise RuntimeError(f'{NAME} needs the dmoodle tool, which this app build does not have')
             env.update(DM_OODLE_HOST=tool('dmoodle'), DM_OODLE_MODULES=pat, DM_OODLE_FILTER='BNSH')
-        run([py, os.path.join(DM, 'gfx/tools/shader_split.py'), romfs, os.path.join(exefs, 'main'), pkg,
+        run([py, os.path.join(DM, 'gfx/tools/shader_split.py'), romfs, main_src or os.path.join(exefs, 'main'), pkg,
              os.path.join(a.work, 'shader_map.found.tsv'), os.path.join(a.work, 'shader_facts.found.tsv'), os.path.join(a.work, 'shader_pairs.found.tsv')],
             env=dict(env, DM_NVN_CAPTURE=os.path.join(a.out, 'nvn_capture')))
 
