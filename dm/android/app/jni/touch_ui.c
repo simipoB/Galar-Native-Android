@@ -77,6 +77,11 @@ static void layout_apply(float w, float h) {
 // L3 / R3 on screen: an option (DM_TOUCH_L3R3=on, Controls → Touch controls), off by default: Sword and Shield hardly use them. -1: not read yet
 static int g_l3r3 = -1;
 static int l3r3_on(void) { if (g_l3r3 < 0) { const char *e = getenv("DM_TOUCH_L3R3"); g_l3r3 = e && !strcmp(e, "on"); } return g_l3r3; }
+// Floating sticks (DM_TOUCH_STICKS=floating, Controls → Touch controls): the movement stick's base comes to wherever the thumb lands on the left half (below the top
+// row), and the right half is the camera alone, by dragging (no right stick on screen). Fixed (default): the sticks where the layout puts them, as on Joy-Cons.
+// Asked for by a player whose thumbs kept hitting the game's own touch buttons (the Poké Ball / satchel) around the fixed sticks
+static int g_float = -1;
+static int float_on(void) { if (g_float < 0) { const char *e = getenv("DM_TOUCH_STICKS"); g_float = e && !strcmp(e, "floating"); } return g_float; }
 static void layout(float w, float h) {
     static int init; if (!init++) for (int i = 0; i < 10; i++) g_ptr[i].id = -1;   // no finger down
     if (w == g_w && h == g_h) return;
@@ -119,6 +124,7 @@ static void layout(float w, float h) {
     if (!g_rstick_on) { g_rknob_x = g_c[C_RSTICK].cx; g_rknob_y = g_c[C_RSTICK].cy; }
     layout_apply(w, h);
     if (!l3r3_on()) g_c[C_L3].shown = g_c[C_R3].shown = 0;   // (an option, off by default: the layout editor's own choice only counts while it is on)
+    if (float_on()) g_c[C_RSTICK].shown = g_c[C_R3].shown = 0;   // (floating: the right half drags the camera; R3 went with the stick it sat on)
     if (!g_stick_on) { g_stick_x = g_knob_x = g_c[C_STICK].cx; g_stick_y = g_knob_y = g_c[C_STICK].cy; }
 }
 static int ctl_off(int c) { return (c == C_L3 || c == C_R3) && !l3r3_on(); }   // left out entirely, the layout editor too
@@ -129,7 +135,7 @@ static int hit(int c, float x, float y, float slack) {
 static int target_at(float x, float y) {
     if (hit(C_RSTICK, x, y, 1.3f)) return C_RSTICK;
     for (int c = C_A; c < NCTL; c++) if (hit(c, x, y, 1.3f)) return c;   // thumbs miss: touch areas 1.3 times the drawing
-    if (x < g_w * 0.42f && y > g_h * 0.30f) return C_STICK;
+    if (float_on() ? x < g_w * 0.5f && y > g_h * 0.16f : x < g_w * 0.42f && y > g_h * 0.30f) return C_STICK;   // (floating: the whole left half below L / ZL)
     if (x > g_w * 0.45f) return C_CAM;
     return -1;
 }
@@ -226,8 +232,11 @@ static void recompute_locked(void) {
 // ---------- the layout editor: hold − for 2 s to enter; drag a control to move it, pinch on it to resize it, double-tap it to hide / show it;
 // hold + for 2 s to go back to the default layout; hold − for 2 s again to save and leave. The game gets no input meanwhile ----------
 static double g_edit_hold_t;   // (g_edit_hold_t: when the hold that toggles the editor started)
-static struct { int32_t id; int c; float ox, oy, x0, y0; double t0; } g_ep[10];
+static struct { int32_t id; int c; float ox, oy, x0, y0, x, y; double t0; } g_ep[10];   // (x y: where the finger is now)
 static struct { int c, active; float d0, r0; } g_pinch;
+// The control last touched in the editor (a yellow-white ring): a pinch with two fingers anywhere on the screen sizes it. A pinch had to start with both fingers
+//   on the control itself, which small ones (− + ☰, L3 / R3) do not leave room for; and a finger resting on + for 2 s resets the whole layout
+static int g_sel = -1;
 static int g_last_tap_c = -1; static double g_last_tap_t;
 static int edit_hit(float x, float y) {   // the smallest control (shown or not) under the finger
     int best = -1; float br = 1e9f;
@@ -245,13 +254,17 @@ static void edit_event(const AInputEvent *e) {
         size_t k = act == AMOTION_EVENT_ACTION_DOWN ? 0 : idx; float x = AMotionEvent_getX(e, k), y = AMotionEvent_getY(e, k);
         if (act == AMOTION_EVENT_ACTION_DOWN) { for (int i = 0; i < 10; i++) g_ep[i].id = -1; g_pinch.active = 0; }
         int c = edit_hit(x, y);
-        for (int i = 0; i < 10; i++) if (g_ep[i].id >= 0 && c >= 0 && g_ep[i].c == c) {   // a second finger on the same control: pinch
-            float dx = x - g_ep[i].x0, dy = y - g_ep[i].y0; g_pinch.c = c; g_pinch.active = 1; g_pinch.d0 = sqrtf(dx * dx + dy * dy) + 1; g_pinch.r0 = g_c[c].r; break; }
-        for (int i = 0; i < 10; i++) if (g_ep[i].id < 0) { g_ep[i].id = AMotionEvent_getPointerId(e, k); g_ep[i].c = c; g_ep[i].x0 = x; g_ep[i].y0 = y; g_ep[i].t0 = now_s();
+        if (!g_pinch.active) for (int i = 0; i < 10; i++) if (g_ep[i].id >= 0) {   // a second finger, anywhere: pinch the first finger's control, else the one last touched
+            int pc = g_ep[i].c >= 0 ? g_ep[i].c : g_sel; if (pc < 0) break;
+            float dx = x - g_ep[i].x, dy = y - g_ep[i].y; g_pinch.c = pc; g_pinch.active = 1; g_pinch.d0 = sqrtf(dx * dx + dy * dy) + 1; g_pinch.r0 = g_c[pc].r;
+            g_ep[i].c = pc; c = pc; g_sel = pc; break; }
+        if (!g_pinch.active && c >= 0) g_sel = c;
+        for (int i = 0; i < 10; i++) if (g_ep[i].id < 0) { g_ep[i].id = AMotionEvent_getPointerId(e, k); g_ep[i].c = c; g_ep[i].x0 = g_ep[i].x = x; g_ep[i].y0 = g_ep[i].y = y; g_ep[i].t0 = now_s();
             g_ep[i].ox = c >= 0 ? g_c[c].cx - x : 0; g_ep[i].oy = c >= 0 ? g_c[c].cy - y : 0; break; }
     } else if (act == AMOTION_EVENT_ACTION_MOVE) {
         float px[10], py[10]; int n = 0;
         for (size_t k = 0; k < AMotionEvent_getPointerCount(e); k++) { int32_t id = AMotionEvent_getPointerId(e, k); float x = AMotionEvent_getX(e, k), y = AMotionEvent_getY(e, k);
+            for (int i = 0; i < 10; i++) if (g_ep[i].id == id) { g_ep[i].x = x; g_ep[i].y = y; }
             for (int i = 0; i < 10; i++) if (g_ep[i].id == id && g_ep[i].c >= 0) {
                 if (g_pinch.active && g_pinch.c == g_ep[i].c) { if (n < 10) { px[n] = x; py[n] = y; n++; } }
                 else { int c = g_ep[i].c; g_c[c].cx = clampf(x + g_ep[i].ox, g_c[c].r, g_w - g_c[c].r); g_c[c].cy = clampf(y + g_ep[i].oy, g_c[c].r, g_h - g_c[c].r); edit_store(c); } } }
@@ -264,7 +277,8 @@ static void edit_event(const AInputEvent *e) {
             if (c >= 0 && t - g_ep[i].t0 < 0.3 && mx * mx + my * my < g_h * g_h * 0.0004f) {   // a tap: a double tap toggles the control
                 if (g_last_tap_c == c && t - g_last_tap_t < 0.4 && c != C_PLUS && c != C_MINUS && c != C_MENU) { g_c[c].shown = !g_c[c].shown; edit_store(c); g_last_tap_c = -1; click_locked(); }
                 else { g_last_tap_c = c; g_last_tap_t = t; } }
-            if (g_pinch.active && g_pinch.c == c) g_pinch.active = 0;
+            if (g_pinch.active && g_pinch.c == c) { g_pinch.active = 0;   // (the finger left behind lets go of it: no jump to where it rests)
+                for (int j = 0; j < 10; j++) if (j != i && g_ep[j].id >= 0 && g_ep[j].c == c) g_ep[j].c = -1; }
             g_ep[i].id = -1; }
         layout_save();   // (each lift: closing the app keeps the edit, #200)
     }
@@ -309,7 +323,8 @@ void touch_ui_event(const AInputEvent *e, float w, float h, uint64_t *btn, int32
             if (t >= C_A) g_held_until[t] = now_s() + 0.08;
             if (t == C_RSTICK || (t >= C_UP && t <= C_RIGHT)) g_inner_t = now_s();
             if (t == C_STICK) { float r = g_c[C_STICK].r; g_stick_on = 1;   // the base comes to the thumb, kept on screen
-                (void)r; g_stick_x = g_c[C_STICK].cx; g_stick_y = g_c[C_STICK].cy; }   // fixed, as on a Joy-Con: the thumb's offset from the base is the tilt
+                if (float_on()) { g_stick_x = clampf(x, r, g_w - r); g_stick_y = clampf(y, r, g_h - r); }   // floating: the base under the thumb, untilted
+                else { g_stick_x = g_c[C_STICK].cx; g_stick_y = g_c[C_STICK].cy; } }   // fixed, as on a Joy-Con: the thumb's offset from the base is the tilt
             break; }
     } else if (act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_POINTER_UP) {
         int32_t id = AMotionEvent_getPointerId(e, act == AMOTION_EVENT_ACTION_UP ? 0 : idx);
@@ -332,6 +347,12 @@ void touch_ui_event(const AInputEvent *e, float w, float h, uint64_t *btn, int32
         for (int i = 0; i < 10; i++) if (g_ptr[i].id == id && g_ptr[i].target == C_MENU && hit(C_MENU, g_ptr[i].x, g_ptr[i].y, 1.5f)) { click_locked(); front_open_menu(0); }
         for (int i = 0; i < 10; i++) if (g_ptr[i].id == id) { if (g_ptr[i].target == C_CAM) g_cam_vx = g_cam_vy = 0; g_ptr[i].id = -1; }
     }
+    // A finger the system never lifted: every move (and every new finger) lists all fingers down, so one held here that the event does not list has gone without
+    //   its UP (a system gesture or panel took it); it let go of its button or stick then. Before, it stayed pressed until the next first finger (ghost presses)
+    if (act == AMOTION_EVENT_ACTION_MOVE || act == AMOTION_EVENT_ACTION_POINTER_DOWN)
+        for (int i = 0; i < 10; i++) if (g_ptr[i].id >= 0) { int seen = 0;
+            for (size_t k = 0; k < AMotionEvent_getPointerCount(e) && !seen; k++) seen = AMotionEvent_getPointerId(e, k) == g_ptr[i].id;
+            if (!seen) { static int nl; if (nl++ < 20) fprintf(stderr, "[touch] a finger on control %d was never lifted by the system: let go\n", g_ptr[i].target); g_ptr[i].id = -1; } }
     if (act == AMOTION_EVENT_ACTION_MOVE || act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN)
         for (size_t k = 0; k < AMotionEvent_getPointerCount(e); k++) {
             int32_t id = AMotionEvent_getPointerId(e, k);
@@ -356,6 +377,15 @@ void touch_ui_event(const AInputEvent *e, float w, float h, uint64_t *btn, int32
     pthread_mutex_unlock(&g_mu);
 }
 void touch_ui_hide(void) { pthread_mutex_lock(&g_mu); g_visible = 0; pthread_mutex_unlock(&g_mu); }
+// The app lost focus or went to the background (android_main.c): every finger let go. Android does not always send the lift or a cancel for fingers down when a
+//   panel opens over the game (the notification shade, Game Booster, the ☰ menu), and the buttons they held stayed pressed
+void touch_ui_release(void) {
+    pthread_mutex_lock(&g_mu); int n = 0;
+    for (int i = 0; i < 10; i++) { if (g_ptr[i].id >= 0) n++; g_ptr[i].id = -1; }
+    recompute_locked(); dm_input_set(g_btn, g_lx, g_ly, g_rx, g_ry);
+    pthread_mutex_unlock(&g_mu);
+    if (n) fprintf(stderr, "[touch] focus lost with %d finger%s down: let go\n", n, n == 1 ? "" : "s");
+}
 // GameActivity.java: a controller connected hides the controls at once (no input needed first); the last one disconnected shows them again
 void touch_ui_pad(int connected) { pthread_mutex_lock(&g_mu); g_visible = !connected; if (!connected) g_touch_t = now_s(); pthread_mutex_unlock(&g_mu); }
 #else
@@ -436,6 +466,7 @@ void touch_ui_setting(const char *key, const char *value) {
     if (!strcmp(key, "DM_TOUCH_OPACITY")) g_opacity = value ? clampf((float)atof(value) / 100.0f, 0.2f, 1.0f) : 1.0f;
     else if (!strcmp(key, "DM_TOUCH_FADE")) g_fade = value ? fmaxf(0.0f, (float)atof(value)) : 3.0f;
     else if (!strcmp(key, "DM_TOUCH_L3R3")) { g_l3r3 = value && !strcmp(value, "on"); g_w = g_h = 0; }   // (laid out again on the next frame)
+    else if (!strcmp(key, "DM_TOUCH_STICKS")) { g_float = value && !strcmp(value, "floating"); g_w = g_h = 0; }
 #ifdef __ANDROID__
     else { void touch_ui_haptic_setting(const char *, const char *); touch_ui_haptic_setting(key, value); }   // DM_TOUCH_HAPTIC, DM_RUMBLE
 #endif
@@ -466,7 +497,8 @@ int front_overlay(dm_ovl_item *it, int max, int width, int height) {
             float a = k->shown ? 1.0f : 0.3f;
             if (c == C_STICK || c == C_RSTICK) compass(it, &n, max, a, k->cx, k->cy, k->cx, k->cy, k->r);
             else if (c == C_THROW) pokeball(it, &n, max, k, 0, a); else if (c == C_MENU) menu_icon(it, &n, max, k, a); else bubble(it, &n, max, k, 0, 0, a);
-            dm_ovl_item *o = add(it, &n, max, k->cx, k->cy, k->r * 1.12f, OVL_RING, 255, 210, 60, 0.95f * a); if (o) o->ring = clampf(4.0f * (g_h / 1080.0f) / (k->r * 1.12f), 0.02f, 0.3f); }
+            int sel = c == g_sel; float rr = k->r * (sel ? 1.22f : 1.12f);   // (the one a pinch sizes: a thicker, paler ring)
+            dm_ovl_item *o = add(it, &n, max, k->cx, k->cy, rr, OVL_RING, 255, sel ? 245 : 210, sel ? 190 : 60, 0.95f * a); if (o) o->ring = clampf((sel ? 7.0f : 4.0f) * (g_h / 1080.0f) / rr, 0.02f, 0.3f); }
     } else if (g_visible) {
         double t = now_s(); int idle = ((g_fade > 0 && t - g_touch_t > g_fade) || touch_menu_active()) && !g_btn && !g_stick_on && !g_rstick_on;   // (in a menu its items are tapped directly)   // nothing touched for 3 s: everything faint
         float ia = idle ? 0.22f : 1.0f;
