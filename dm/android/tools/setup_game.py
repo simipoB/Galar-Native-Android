@@ -363,7 +363,8 @@ def main():
         # the pack compressed (zlib per shader, the engine inflates each as it loads it: nvn_vk.c pak_blob): about 3.4 times smaller on the phone (Violet 2.9 GB → 0.85 GB, Sword 2.3 → 0.7)
         raw = os.path.join(a.work, 'shaders.raw.pak')
         run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, raw])
-        run([py, os.path.join(DM, 'android/tools/spv_pak.py'), '--compress', raw, os.path.join(a.out, 'shaders.pak')])
+        part = os.path.join(a.out, 'shaders.pak.part')   # written beside it, then swapped in: a setup stopped while writing leaves the old pack whole
+        run([py, os.path.join(DM, 'android/tools/spv_pak.py'), '--compress', raw, part]); os.replace(part, os.path.join(a.out, 'shaders.pak'))
         os.remove(raw)
 
     step(6)
