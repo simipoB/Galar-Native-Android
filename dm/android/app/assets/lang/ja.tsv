@@ -358,3 +358,5 @@ Off at 30 fps: frame generation needs the game at a locked 60 fps (Performance �
 Paused: the game runs at %s fps here, and frame generation needs a locked 60. It comes back on by itself once the game holds 60.	一時停止中：ここではゲームが%s fpsで動いており、フレーム生成には安定した60が必要です。ゲームが60を保つと自動で再開します。
 On: a picture is made between each two of the game's frames, so 60 fps moves like 120. Only while the game holds a locked 60 fps; your input shows about 8 ms later	オン：ゲームの2フレームごとに中間の画像を作り、60 fpsを120のように動かします。ゲームが60 fpsで安定しているときだけ。操作は約8 ms遅れて表示されます
 Auto: 2x, light (the game at a locked 60 shown at 120)	自動：2x、軽め（60で安定したゲームを120で表示）
+Widescreen	ワイド
+Widescreen: the game's camera made as wide as your screen, nothing stretched (Sword / Shield 1.3.2; the HUD is stretched)	ワイド：ゲームのカメラを画面の横幅いっぱいに広げ、引き伸ばしません（ソード／シールド 1.3.2。HUDは引き伸ばされます）

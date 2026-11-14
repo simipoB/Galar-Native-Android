@@ -358,3 +358,5 @@ Off at 30 fps: frame generation needs the game at a locked 60 fps (Performance �
 Paused: the game runs at %s fps here, and frame generation needs a locked 60. It comes back on by itself once the game holds 60.	Pausada: el juego va a %s fps aquí, y la generación de fotogramas necesita 60 estables. Se reactiva sola cuando el juego mantiene 60.
 On: a picture is made between each two of the game's frames, so 60 fps moves like 120. Only while the game holds a locked 60 fps; your input shows about 8 ms later	Activado: se crea una imagen entre cada dos fotogramas del juego, así 60 fps se mueven como 120. Solo mientras el juego mantiene 60 fps estables; tu control se ve unos 8 ms más tarde
 Auto: 2x, light (the game at a locked 60 shown at 120)	Auto: 2x, ligero (el juego a 60 estables mostrado a 120)
+Widescreen	Panorámica
+Widescreen: the game's camera made as wide as your screen, nothing stretched (Sword / Shield 1.3.2; the HUD is stretched)	Panorámica: la cámara del juego tan ancha como tu pantalla, sin estirar nada (Sword / Shield 1.3.2; la interfaz se estira)
