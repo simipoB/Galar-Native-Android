@@ -324,6 +324,20 @@ Divisions	Divisions
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Textures : chaque lecture de texture est limitée à une plage raisonnable. Si le blanc disparaît, dites-le-nous : une texture est mal lue
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entrées : chaque valeur transmise par le shader de sommets est limitée. Si le blanc disparaît, dites-le-nous
 Divisions: every division is limited. If the white goes away, tell us	Divisions : chaque division est limitée. Si le blanc disparaît, dites-le-nous
+Low: 3D at about 600p, lighter	Faible : 3D à environ 600p, plus léger
+Lowest: 3D at 960x540, coolest	Minimum : 3D en 960x540, le plus frais
+Locked for now	Verrouillé pour l'instant
+Off for every phone until the game holds a solid frame rate without it. It comes back after that.	Désactivé sur tous les téléphones jusqu'à ce que le jeu tienne une fréquence d'images stable sans cela. Il reviendra ensuite.
+Save folder	Dossier de sauvegarde
+App folder	Dossier de l'app
+App folder: Android/data, as before	Dossier de l'app : Android/data, comme avant
+Documents	Documents
+Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save, pour les outils de synchronisation comme Syncthing. Votre sauvegarde y est copiée au prochain démarrage ; ce qui s'y trouvait déjà est gardé en copie de secours. Nécessite l'accès à tous les fichiers
+The last setup translated only part of the game's shaders, so parts of the game were not drawn. Tap Set up once more: it finishes them (the ones already done are kept).	La dernière installation n'a traduit qu'une partie des shaders du jeu, d'où des parties du jeu non affichées. Touchez Installer encore une fois : elle les termine (celles déjà faites sont gardées).
+FSR 1.0: AMD's upscaler, edge-aware enlarging then sharpening	FSR 1.0 : l'upscaler d'AMD, agrandissement attentif aux contours puis netteté
+Faster rendering	Rendu plus rapide
+Auto: on for Adreno GPUs, off for others	Auto : activé sur les GPU Adreno, désactivé sur les autres
+Off: the graphics work runs on the game's own thread	Désactivé : le travail graphique se fait sur le fil du jeu lui-même
 Bright scenes in a wider format	Scènes éclairées dans un format plus large
 On: the lit scene is drawn in a format with more room (RGBA16F instead of R11G11B10F), a test for white or flickering pictures; uses a little more memory	Activé : la scène éclairée est dessinée dans un format plus large (RGBA16F au lieu de R11G11B10F), un test pour les images blanches ou qui clignotent ; utilise un peu plus de mémoire
 AMD FidelityFX Super Resolution 1: edge-aware upscaling, then sharpening (Sharpness sets how much)	AMD FidelityFX Super Resolution 1 : mise à l'échelle qui suit les contours, puis netteté (Netteté règle la quantité)

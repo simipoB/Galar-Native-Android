@@ -324,6 +324,20 @@ Divisions	除算
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	テクスチャ：テクスチャの読み取り値をすべて妥当な範囲に制限します。白が消えたら教えてください（テクスチャの読み取りが誤っています）
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	入力：頂点シェーダーから渡される値をすべて制限します。白が消えたら教えてください
 Divisions: every division is limited. If the white goes away, tell us	除算：すべての除算結果を制限します。白が消えたら教えてください
+Low: 3D at about 600p, lighter	低：3Dを約600pで描画、軽め
+Lowest: 3D at 960x540, coolest	最低：3Dを960x540で描画、最も発熱が少ない
+Locked for now	現在はロック中
+Off for every phone until the game holds a solid frame rate without it. It comes back after that.	ゲームがこれなしで安定したフレームレートを保てるようになるまで、すべての端末でオフです。その後で戻ってきます。
+Save folder	セーブの保存先
+App folder	アプリのフォルダー
+App folder: Android/data, as before	アプリのフォルダー：これまでどおり Android/data
+Documents	ドキュメント
+Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save（Syncthingなどの同期ツール用）。次回の起動時にセーブがそこへコピーされ、既にあったものはバックアップとして残ります。すべてのファイルへのアクセスが必要です
+The last setup translated only part of the game's shaders, so parts of the game were not drawn. Tap Set up once more: it finishes them (the ones already done are kept).	前回のセットアップはゲームのシェーダーの一部しか変換しなかったため、ゲームの一部が描画されませんでした。もう一度セットアップをタップしてください。残りを仕上げます（変換済みのものは保持されます）。
+FSR 1.0: AMD's upscaler, edge-aware enlarging then sharpening	FSR 1.0：AMDのアップスケーラー。輪郭を考慮して拡大し、その後シャープ化します
+Faster rendering	高速レンダリング
+Auto: on for Adreno GPUs, off for others	自動：Adreno GPUではオン、それ以外ではオフ
+Off: the graphics work runs on the game's own thread	オフ：グラフィック処理をゲーム自身のスレッドで行います
 Bright scenes in a wider format	明るい場面をより広い形式で描画
 On: the lit scene is drawn in a format with more room (RGBA16F instead of R11G11B10F), a test for white or flickering pictures; uses a little more memory	オン：明るい場面をより余裕のある形式（R11G11B10Fの代わりにRGBA16F）で描画します。白い画面やちらつきのテストです。メモリを少し多く使います
 AMD FidelityFX Super Resolution 1: edge-aware upscaling, then sharpening (Sharpness sets how much)	AMD FidelityFX Super Resolution 1：輪郭を保つ拡大の後にシャープ化（シャープネスで強さを調整）

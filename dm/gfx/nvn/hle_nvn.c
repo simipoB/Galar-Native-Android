@@ -1068,7 +1068,13 @@ typedef struct { int kind, n, idx; uint64_t *h; NVNqueue *q; sync_t *s; win_t *o
 enum { RQ_N = 512 };
 static rq_item g_rq[RQ_N]; static uint64_t g_rq_head, g_rq_tail; static int g_rq_presents;
 static pthread_mutex_t g_rq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_rq_cv = PTHREAD_COND_INITIALIZER;
-static int rq_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_ASYNC"); v = e && strcmp(e, "off") && strcmp(e, "0"); if (v) LOG("[nvn] the replay runs on its own thread (DM_NVN_ASYNC)"); } return v; }
+// DM_NVN_ASYNC=1 on, 0 / off off; unset (Auto): on for Adreno, where it is tested (a Galaxy S25+ went from 42 ms frames to a steady 33 at 30 fps, the replay's 28-33 ms
+//   moved off the game's thread), off for other GPUs until it has been run there
+const char *nvn_vk_gpu_name(void) __attribute__((weak));
+static int rq_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_ASYNC"); const char *g = nvn_vk_gpu_name ? nvn_vk_gpu_name() : NULL;
+    int autoon = !(e && *e) && g && strstr(g, "Adreno");
+    v = autoon || (e && *e && strcmp(e, "off") && strcmp(e, "0"));
+    LOG("[nvn] the replay %s (DM_NVN_ASYNC %s)", v ? "runs on its own thread" : "runs on the game's thread", e && *e ? e : autoon ? "Auto: on for Adreno" : "Auto: off for this GPU"); } return v; }
 static const char *volatile g_rq_at = "idle";
 // A wait on the replay thread that takes this long has gone wrong: said in the log with who is waiting and what the replay thread is doing
 static void rq_wait(const char *who) {
@@ -1601,14 +1607,19 @@ static void vstep_tick(const win_t *o) {
     // at most 2 slots: 30 fps is the floor, 60 when frames fit (a 3-slot hold, 20 fps, swung the picture between 20 and 60). The live target 30 holds every frame 2
     int k0 = g_vs.k, n = nvn_fstep_next(&g_vs, shown, cost, live_fps() == 30 ? 2 : 1, 2, 0);
     uint32_t ns = (uint32_t)(((uint64_t)n * 1000000000ull + (uint64_t)dm_step_hz - 1) / (uint64_t)dm_step_hz);
-    // The game's step follows real time (loader.c fps_patch, dm_step_table): the time since the last frame's start, in whole slots, up to 83.3 ms (the longest
-    //   step the game's own table has), the part of a slot left over carried into the next frame and anything over 83.3 ms of a stall dropped; every entry
-    //   of the table gets it, so whichever the game picks from its own measures, game time = real time. Presentation still holds frames k slots (above).
+    // The game's step follows real time (loader.c fps_patch, dm_step_table): the time since the last frame's start, in whole slots, up to 50 ms, the part of a
+    //   slot left over carried into the next frame and anything over the cap dropped; every entry of the table gets it, so whichever the game picks from its own
+    //   measures, game time = real time down to 20 fps. Presentation still holds frames k slots (above).
+    //   The cap was 83.3 ms (the longest step the game's own table has), but the game was never tuned for steps that long: on a phone at 13-14 fps (#232,
+    //   Snapdragon 4 Gen 2) every step was 67-83 ms and the player walked through a wall at the Motostoke stairs. Below 20 fps the game now runs slower
+    //   than real time (14 fps: ~70 %) instead of taking steps the collision can miss. DM_GAME_STEP_MAX_MS=17..84 changes the cap (84 = the old behaviour).
     //   DM_GAME_STEP=fixed: only the interval-2 entry, with the hold's step, as before
-    { extern uint8_t *dm_step_table __attribute__((weak)); static int fixed = -1; static double acc, game_sum, real_sum;
-      if (fixed < 0) { const char *e = getenv("DM_GAME_STEP"); fixed = e && !strcmp(e, "fixed"); if (!fixed && &dm_step_table && dm_step_table) LOG("[nvn] game step: real time, whole slots up to 83.3 ms (DM_GAME_STEP=fixed: the hold's step)"); }
+    { extern uint8_t *dm_step_table __attribute__((weak)); static int fixed = -1; static double acc, game_sum, real_sum, cap_ms = 50;
+      if (fixed < 0) { const char *e = getenv("DM_GAME_STEP"); fixed = e && !strcmp(e, "fixed");
+          const char *c = getenv("DM_GAME_STEP_MAX_MS"); if (c && *c) { double m = atof(c); if (m >= 17 && m <= 84) cap_ms = m; }
+          if (!fixed && &dm_step_table && dm_step_table) LOG("[nvn] game step: real time, whole slots up to %.1f ms, slower than real time below %.0f fps (DM_GAME_STEP=fixed: the hold's step; DM_GAME_STEP_MAX_MS: the cap)", cap_ms, 1000.0 / cap_ms); }
       if (!fixed && &dm_step_table && dm_step_table) {
-          int maxs = (int)(83333334.0 / v); if (maxs < 1) maxs = 1;
+          int maxs = (int)(cap_ms * 1e6 / v + 0.01); if (maxs < 1) maxs = 1;   // + 0.01: 50 ms is exactly 3 slots of 16.67 ms, not 2.99
           acc += shown > 0 ? shown : (double)n;
           int g = (int)floor(acc + 0.5); if (g < 1) g = 1; if (g > maxs) g = maxs;
           acc -= g; if (acc > maxs) acc = maxs; if (acc < -1) acc = -1;
@@ -1644,6 +1655,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     (void)q; win_t *o = (win_t *)w; o->presents++;
     dm_fps_lock_tick(); dm_res_scale_tick();
     if (dm_fps_state) { static int was; int c = fps_step_cap(); if (c != was) { LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, c == 30 && was == 60 ? " (prerendered movie)" : ""); was = c; } }
+    { extern void dm_fps_tick(void) __attribute__((weak)); if (dm_fps_tick) dm_fps_tick(); }   // (loader.c: the 60 fps patch deferred to a field area goes in)
     if (fstep_on()) fstep_tick(o); else if (vstep_on()) vstep_tick(o); else if (dyn_on()) dyn_tick(o);
     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
     present_cfg(o);
