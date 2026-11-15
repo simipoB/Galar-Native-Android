@@ -382,3 +382,4 @@ Updating the shaders	シェーダーを更新中
 3D render scale	3D描画スケール
 Auto: what the Graphics setting gives, lowered by itself when the phone is hot	自動：グラフィック設定に従い、端末が熱いと自動で下げます
 50 %: the 3D at half size, the coolest and fastest (text and menus stay sharp)	50%：3Dを半分のサイズで描画。最も涼しく速い（文字とメニューは鮮明なまま）
+This phone's own graphics driver has no Vulkan 1.1, which the game needs: it won't run with it. On some Adreno phones a custom driver (Graphics driver, below) adds it.	この端末の標準グラフィックドライバーには、ゲームに必要なVulkan 1.1がありません。このままでは動きません。一部のAdreno端末では、カスタムドライバー（下の「グラフィックドライバー」）で使えるようになります。
