@@ -30,7 +30,7 @@
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
-import collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, time
+import collections, concurrent.futures as cf, hashlib, itertools, json, os, re, struct, subprocess, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
@@ -659,6 +659,10 @@ def scan_file(args):
     if head[:4] == SPKG or head[:4] == b'\0\0\1\0' and path.endswith('.gz'):   # Three Houses' loose shader packages and chunked zlib files (kt_shaders)
         kt_shaders(open(path, 'rb').read(), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if os.path.getsize(path) >= 1 << 26 and not path.endswith('.zs') and head[:4] not in (b'Yaz0', b'SARC', b'MSHD') and head[:8] not in (b'UnityFS\0', b'GFLXPACK') and head[8:11] != b'\0\0\0':
+        # a big file of no container kind (Sword / Shield's 963 MB sound bank Stream.pck): first searched in pieces for what the test below looks for, so a file
+        #   without shaders is not read into memory whole (a scan worker held the sound bank's 0.96 GB for nothing)
+        if not file_holds(path, [b'BNSH\0\0\0\0', b'BAHS'] + ([CTL_MAGIC] if RAW_NVN else [])): return rel, {}, set(), {}
     d = unzs(path) if path.endswith('.zs') else open(path, 'rb').read()
     if d[:4] == b'Yaz0': d = yaz0(d)
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
@@ -668,6 +672,17 @@ def scan_file(args):
     elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d) and d[:8] != b'GFLXPACK' and not (RAW_NVN and CTL_MAGIC in d): return rel, {}, set(), {}   # a SARC may hold Yaz0 members; a GFLXPACK holds LZ4 members
     else: scan_blob(d, '/' + rel, found)
     return rel, uniq_keys(found), var_pairs(found), trees
+
+def file_holds(path, marks):
+    """whether the file holds any of marks, read 16 MB at a time (each piece searched with the end of the one before, so a mark across two pieces is found)"""
+    keep, tail = max(map(len, marks)) - 1, b''
+    with open(path, 'rb') as f:
+        while True:
+            b = f.read(1 << 24)
+            if not b: return False
+            w = tail + b
+            if any(m in w for m in marks): return True
+            tail = w[-keep:]
 
 def uniq_keys(found):
     uniq = {}
@@ -697,44 +712,65 @@ def mem_wait(w):   # worker w > 0 waits while the phone is short of memory (DM_G
         except (OSError, StopIteration, ValueError): return
         if free >= need: return
         time.sleep(0.25)
-def pmap(J, fn, items, initargs):   # fn over items in J worker processes, results in order; Android's Python has no named semaphores (no process pools), so there the workers are forked directly
+def pmap(J, fn, items, initargs):   # fn over items in J worker processes, results in order, one at a time (an iterator); Android's Python has no named semaphores (no process pools), so there the workers are forked directly
     try:
         import multiprocessing.synchronize
     except ImportError:
-        import pickle, tempfile
-        # Each result is written as soon as it is made, so a worker holds one file's shaders at a time and one the system kills keeps what it wrote. Android's low-memory
-        # killer took one of 8 workers holding all their results (status 9, #43): the rest of a killed worker's share runs again alone, after the others are done
-        def fork(part, w=0):
-            fd, tmp = tempfile.mkstemp(suffix='.pk'); pid = os.fork()
-            if not pid:
-                try:
-                    _pool_init(*initargs)
-                    with os.fdopen(fd, 'wb') as f:
-                        for x in part: mem_wait(w); pickle.dump(fn(x), f); f.flush()
-                    os._exit(0)
-                except BaseException:
-                    import traceback; traceback.print_exc(); os._exit(1)
-            os.close(fd); return pid, tmp
-        def collect(tmp):   # the whole results in the file (a kill can cut the last one short)
-            got = []
-            with open(tmp, 'rb') as f:
-                while True:
-                    try: got.append(pickle.load(f))
-                    except Exception: break
-            os.unlink(tmp); return got
+        yield from pmap_forked(J, fn, items, initargs); return
+    with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=initargs) as ex: yield from ex.map(fn, items, chunksize=16)
+
+def pmap_forked(J, fn, items, initargs):
+    import pickle, tempfile
+    # Each result is written as soon as it is made, so a worker holds one file's shaders at a time and one the system kills keeps what it wrote. Android's low-memory
+    # killer took one of 8 workers holding all their results (status 9, #43): the rest of a killed worker's share runs again alone, after the others are done.
+    # The results are then read back one at a time, in order, for main() to merge as they come: read back all at once, every file's own copy of the shaders it
+    # shares with other files was in memory together (1.6 GB for Sword / Shield, the moment Android stopped the setup on a 12 GB phone). Each result is stored as
+    # its length (u64) + its pickle, so the complete ones are counted without reading them
+    tmps = []
+    def fork(part, w=0):
+        fd, tmp = tempfile.mkstemp(suffix='.pk'); tmps.append(tmp); pid = os.fork()
+        if not pid:
+            try:
+                _pool_init(*initargs)
+                with os.fdopen(fd, 'wb') as f:
+                    for x in part: mem_wait(w); b = pickle.dumps(fn(x)); f.write(struct.pack('<Q', len(b))); f.write(b); f.flush()
+                os._exit(0)
+            except BaseException:
+                import traceback; traceback.print_exc(); os._exit(1)
+        os.close(fd); return pid, tmp
+    def count(tmp):   # the whole results in the file (a kill can cut the last one short)
+        n = at = 0; size = os.path.getsize(tmp)
+        with open(tmp, 'rb') as f:
+            while at + 8 <= size:
+                f.seek(at); at += 8 + struct.unpack('<Q', f.read(8))[0]
+                if at > size: break
+                n += 1
+        return n
+    def read(files):   # one worker's results, in order (its files are open and already unlinked)
+        for f, n in files:
+            for _ in range(n): yield pickle.loads(f.read(struct.unpack('<Q', f.read(8))[0]))
+            f.close()
+    try:
         parts = [items[w::J] for w in range(J)]
         kids = [fork(p, w) for w, p in enumerate(parts)]
-        done = [(os.waitpid(pid, 0)[1], collect(tmp)) for pid, tmp in kids]
-        out = [None] * len(items)
-        for w, (st, got) in enumerate(done):
+        done = [(os.waitpid(pid, 0)[1], [(tmp, count(tmp))]) for pid, tmp in kids]
+        for w, (st, files) in enumerate(done):
+            got = sum(n for _, n in files)
             for _ in range(3):
                 if not (st and os.WIFSIGNALED(st)): break
-                print(f'shader scan worker {w} was stopped (signal {os.WTERMSIG(st)}) after {len(got)} of {len(parts[w])} files: the rest again, alone', flush=True)
-                pid, tmp = fork(parts[w][len(got):]); st = os.waitpid(pid, 0)[1]; got += collect(tmp)
-            if st or len(got) != len(parts[w]): red(f'shader scan worker {w} failed ({st}, {len(got)} of {len(parts[w])} files)')
-            out[w::J] = got
-        return out
-    with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=initargs) as ex: return list(ex.map(fn, items, chunksize=16))
+                print(f'shader scan worker {w} was stopped (signal {os.WTERMSIG(st)}) after {got} of {len(parts[w])} files: the rest again, alone', flush=True)
+                pid, tmp = fork(parts[w][got:]); st = os.waitpid(pid, 0)[1]; files.append((tmp, count(tmp))); got += files[-1][1]
+            if st or got != len(parts[w]): red(f'shader scan worker {w} failed ({st}, {got} of {len(parts[w])} files)')
+        readers = []
+        for _, files in done:   # opened, then unlinked at once: nothing is left behind however this process ends
+            opened = [(open(tmp, 'rb'), n) for tmp, n in files]
+            for tmp, _ in files: os.unlink(tmp); tmps.remove(tmp)
+            readers.append(read(opened))
+    finally:
+        for tmp in tmps:
+            try: os.unlink(tmp)
+            except OSError: pass
+    for i in range(len(items)): yield next(readers[i % J])
 
 def main():
     romfs_l, main_l, pkg, mapout, factsout = sys.argv[1:6]
@@ -769,7 +805,14 @@ def main():
             for nm in names: found += ue_shaders(open(os.path.join(ued, nm), 'rb').read(), f'/ue_shaders/{nm}')
         results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}))
     zdicts = {k: v for r in romfs_v for k, v in zs_dicts(r).items()}   # Tears of the Kingdom's zstd dictionaries (zs_dicts)
-    keys = {}
+    keys = {}; per_src = collections.Counter(); pairs = set()
+    def merge(uniq, pr):   # one file's results into the union as they arrive: only the first copy of a key is kept, so the other copies are freed with their file's result
+        pairs.update(pr)
+        for key, v in uniq.items():
+            if key in keys:
+                if not same_shader(keys[key][2:4], v[2:4]): red(f'key {key} is the same but the control section or code area differs ({v[0]} / {keys[key][0]})')
+                continue
+            keys[key] = v; per_src[group(v[0])] += 1
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
     J = int(os.environ.get('J', '8'))
     big = [j for p, r in files for j in (linkdata_jobs(p, r) or [])]   # Three Houses' 6.9 GB DATA1.bin: one job per range of entries, not one read of the whole file
@@ -777,45 +820,44 @@ def main():
     tr_jobs, trp = trpfs_jobs(files)   # Pokémon Legends: Z-A's Trinity packs (data.trpfs and its index data.trpfd), decoded by the game's own Oodle in the Mac host
     big += pak_jobs + tr_jobs
     files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp]
-    results += pmap(J, scan_file, big + files, (common, {}, zdicts))
     trees, defer = {}, []
-    for rel, uniq, pr, extra in results:
+    for rel, uniq, pr, extra in itertools.chain(results, pmap(J, scan_file, big + files, (common, {}, zdicts))):   # (a deferred file's result is empty until the second pass)
         if extra == 'defer': defer.append(rel)
         elif extra: trees.update(extra)
+        merge(uniq, pr)
     if defer:
         byrel = {r: p for p, r in files}
-        again = pmap(J, scan_file, [(byrel[r], r) for r in defer], (common, trees, zdicts))
-        for rel, uniq, pr, extra in again:
+        for rel, uniq, pr, extra in pmap(J, scan_file, [(byrel[r], r) for r in defer], (common, trees, zdicts)):
             if extra == 'defer': red(f'{rel}: Unity serialized file without type trees, and no bundle has a Shader type tree of the same hash to borrow')
-        results = [r for r in results if r[3] != 'defer'] + again
-    per_src = collections.Counter(); pairs = set()
-    for rel, uniq, pr, _ in results:
-        pairs |= pr
-        for key, v in uniq.items():
-            if key in keys:
-                if not same_shader(keys[key][2:4], v[2:4]): red(f'key {key} is the same but the control section or code area differs ({v[0]} / {keys[key][0]})')
-                continue
-            keys[key] = v; per_src[group(v[0])] += 1
+            merge(uniq, pr)
     if SEPARABLE:
         sp, cover = separable_pairs(keys); pairs |= sp
         print(f'single-stage programs: every vertex shader is paired with a cover of {len(cover)} pixel shader(s) ({" ".join(cover)})')
     os.makedirs(pkg, exist_ok=True)
     for f in os.listdir(pkg):
         if f.endswith('.bin'): os.unlink(os.path.join(pkg, f))
-    recs = collections.defaultdict(list); rows = []; facts = {}; stat = collections.Counter()
-    for key in sorted(keys, key=lambda k: (group(keys[k][0]), keys[k][0], k)):   # the same input gives byte-identical output
-        where, st, ctl, code = keys[key]
-        name = f'{st}_{group(where)}.bin'
-        rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
-        if rec.find(CTL_MAGIC) != 0x38 + len(code): red(f'key {key}: the control magic appears in the code area, dmsh_build would split the record wrongly')
-        if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
-        rows.append((name, len(recs[name]), STAGE_NAME[st], key, where)); recs[name].append(bytes(rec)); stat[st] += 1
-        if st == 'cs':
-            x, y, z = struct.unpack_from('<3I', ctl, 0x748); sh = struct.unpack_from('<I', ctl, 0x754)[0]
-            if not x * y * z: red(f'compute shader {key}: control +0x748 thread group is 0 ({where})')
-            facts[key] = {'local': [x, y, z], 'shared': (sh + 15) // 16 * 16}
-    for name, rr in recs.items():
-        with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
+    rows = []; facts = {}; stat = collections.Counter(); nrec = collections.Counter(); out, cur = {}, None   # out: the open package files of the current group
+    try:
+        for key in sorted(keys, key=lambda k: (group(keys[k][0]), keys[k][0], k)):   # the same input gives byte-identical output
+            where, st, ctl, code = keys[key]
+            g = group(where); name = f'{st}_{g}.bin'
+            rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
+            if rec.find(CTL_MAGIC) != 0x38 + len(code): red(f'key {key}: the control magic appears in the code area, dmsh_build would split the record wrongly')
+            if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
+            # each record goes to its package file at once (gathered for all packages first, they were a second copy of every shader in memory): the keys come
+            #   sorted by group first, so a group's few files (one per stage) are open together and closed when the next group starts
+            if g != cur:
+                for f in out.values(): f.close()
+                out, cur = {}, g
+            if name not in out: out[name] = open(os.path.join(pkg, name), 'ab')   # (the old .bin files were removed above)
+            out[name].write(rec)
+            rows.append((name, nrec[name], STAGE_NAME[st], key, where)); nrec[name] += 1; stat[st] += 1
+            if st == 'cs':
+                x, y, z = struct.unpack_from('<3I', ctl, 0x748); sh = struct.unpack_from('<I', ctl, 0x754)[0]
+                if not x * y * z: red(f'compute shader {key}: control +0x748 thread group is 0 ({where})')
+                facts[key] = {'local': [x, y, z], 'shared': (sh + 15) // 16 * 16}
+    finally:
+        for f in out.values(): f.close()
     with open(mapout, 'w') as f:
         kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] for r in rows)),
                                             ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
