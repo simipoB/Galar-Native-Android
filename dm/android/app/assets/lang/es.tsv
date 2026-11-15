@@ -382,3 +382,4 @@ Updating the shaders	Actualizando los shaders
 3D render scale	Escala de renderizado 3D
 Auto: what the Graphics setting gives, lowered by itself when the phone is hot	Auto: lo que da el ajuste de Gráficos, reducido solo cuando el móvil se calienta
 50 %: the 3D at half size, the coolest and fastest (text and menus stay sharp)	50 %: el 3D a la mitad de tamaño, lo más fresco y rápido (el texto y los menús siguen nítidos)
+This phone's own graphics driver has no Vulkan 1.1, which the game needs: it won't run with it. On some Adreno phones a custom driver (Graphics driver, below) adds it.	El controlador gráfico propio de este móvil no tiene Vulkan 1.1, que el juego necesita: no funcionará con él. En algunos móviles Adreno un controlador personalizado (Controlador gráfico, abajo) lo añade.
