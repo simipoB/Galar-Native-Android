@@ -3092,6 +3092,30 @@ static VkBlendFactor bfac_dev(int f) {
 }
 static VkBlendOp bop(int e) { switch (e) { case 2: return VK_BLEND_OP_SUBTRACT; case 3: return VK_BLEND_OP_REVERSE_SUBTRACT; case 4: return VK_BLEND_OP_MIN; case 5: return VK_BLEND_OP_MAX; } return VK_BLEND_OP_ADD; }
 // vertex format for a shader input of class ct (0 float, 1 uint, 2 sint): an integer format of the other signedness is read with the same width and the input's sign
+// Vertex formats the driver can't read (Mali white screen lead): Vulkan makes the *_USCALED / *_SSCALED, 3-component 8 / 16-bit and B10G11R11 vertex formats optional,
+//   and using one the driver doesn't list is undefined (garbage values). Each format the game uses is checked once and logged: "vertex format nvn 0x.. (vk N): ok" or
+//   [RED] "... NOT supported for vertex buffers by this driver". DM_VK_VFMT_DENY=<vk>,<vk>,... or =scaled treats those as unsupported (to test on a GPU that has them)
+static int vfmt_deny(VkFormat f) {
+    static int init; static int deny[64], nd, scaled;
+    if (!init) { init = 1; const char *e = getenv("DM_VK_VFMT_DENY");
+        for (const char *p = e; p && *p && nd < 64; ) { if (!strncmp(p, "scaled", 6)) { scaled = 1; p += 6; } else { char *q; long v = strtol(p, &q, 10); if (q == p) break; deny[nd++] = (int)v; p = q; } if (*p == ',') p++; } }
+    if (scaled && ((f >= VK_FORMAT_R8_USCALED && f <= VK_FORMAT_R8_SSCALED) || (f >= VK_FORMAT_R8G8_USCALED && f <= VK_FORMAT_R8G8_SSCALED) || (f >= VK_FORMAT_R8G8B8_USCALED && f <= VK_FORMAT_R8G8B8_SSCALED)
+        || (f >= VK_FORMAT_R8G8B8A8_USCALED && f <= VK_FORMAT_R8G8B8A8_SSCALED) || (f >= VK_FORMAT_R16_USCALED && f <= VK_FORMAT_R16_SSCALED) || (f >= VK_FORMAT_R16G16_USCALED && f <= VK_FORMAT_R16G16_SSCALED)
+        || (f >= VK_FORMAT_R16G16B16_USCALED && f <= VK_FORMAT_R16G16B16_SSCALED) || (f >= VK_FORMAT_R16G16B16A16_USCALED && f <= VK_FORMAT_R16G16B16A16_SSCALED))) return 1;
+    for (int i = 0; i < nd; i++) if (deny[i] == (int)f) return 1;
+    return 0;
+}
+static int vfmt_supported(int nvn_fmt, VkFormat f) {   // 1 the driver reads it as a vertex buffer; checked and logged once per format
+    static _Atomic uint8_t st[256];   // 0 not checked, 1 ok, 2 not supported (formats here are all below 256)
+    if ((unsigned)f >= 256) return 1;
+    int s = atomic_load(&st[f]);
+    if (!s) { VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_pd, f, &fp);
+        int ok = (fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) && !vfmt_deny(f); s = ok ? 1 : 2;
+        uint8_t z = 0; if (atomic_compare_exchange_strong(&st[f], &z, (uint8_t)s)) {
+            if (ok) VLOG("vertex format nvn %#x (vk %d): ok", nvn_fmt, (int)f);
+            else VLOG("[RED] vertex format nvn %#x (vk %d) is NOT supported for vertex buffers by this driver%s: its values are undefined here", nvn_fmt, (int)f, vfmt_deny(f) ? " (DM_VK_VFMT_DENY)" : ""); } }
+    return s == 1;
+}
 static VkFormat vfmt_for(int nvn_fmt, int ct) {
     int fc; VkFormat f = (VkFormat)nvn_vfmt_to_vk(nvn_fmt, &fc);
     if (!f) return VK_FORMAT_UNDEFINED;
@@ -3485,6 +3509,7 @@ static VkPipeline pso_get(vprog *pr, VkPrimitiveTopology topo) {
         uint32_t loc = vs->in[i].location; if (loc >= 32) continue;
         k.attr[loc].used = 1;
         if ((int)loc < S.nattr && S.attr[loc].fmt) { int st = S.attr[loc].stream; VkFormat f = vfmt_for(S.attr[loc].fmt, vs->in[i].sclass);
+            if (f) vfmt_supported(S.attr[loc].fmt, f);
             if (f && st < 16) { k.attr[loc].fmt = f; k.attr[loc].off = S.attr[loc].offset; k.attr[loc].bind = (uint8_t)st; k.attr[loc].inst = S.stream[st].divisor != 0; k.attr[loc].div = S.stream[st].divisor; continue; }
             RED_ONCE(25, "vertex attribute format %#x not mapped", S.attr[loc].fmt); }
         k.attr[loc].fmt = vs->in[i].sclass == 1 ? VK_FORMAT_R32G32B32A32_UINT : vs->in[i].sclass == 2 ? VK_FORMAT_R32G32B32A32_SINT : VK_FORMAT_R32G32B32A32_SFLOAT; k.attr[loc].bind = 16;   // unbound: reads 0
