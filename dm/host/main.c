@@ -111,6 +111,7 @@ static void host_preload(int argc, char **argv) {
     uint64_t ta = now_ns();
     probe_install();   // DM_PROBE probes (for diagnostics)
     hid_keys_init();   // DM_KEYS scripted input
+    { void dm_cheats_start(void); dm_cheats_start(); }   // cheats.c: DM_CHEATS_DIR's Atmosphère cheats, run 12 times a second
     uint64_t tb = now_ns();
     stubs_report();
     if (g_flag.bootprof) LOG("① breakdown (after loading): probes / keys %.1f ms, stub report %.1f ms", (tb - ta) / 1e6, (now_ns() - tb) / 1e6);

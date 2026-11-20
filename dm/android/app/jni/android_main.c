@@ -232,6 +232,11 @@ static int display_mode(void) { const char *m = getenv("DM_DISPLAY_MODE"); retur
 static float g_user_cap = -1;   // the player's 3D render scale (the slider or the Graphics level's; -1 none), which Performance only ever goes under (Sword / Shield)
 static float display_cap(float c) { return display_mode() == 2 && display_galar() && c > 0.667f ? 0.667f : c; }
 static int g_fps_guard;   // (the fps guard's target: defined below with fps_guard_init; changed here when the frame rate is)
+// the cheats the engine loaded (cheats.c dm_cheats_info), as bytes: names in a player's file need not be valid UTF-8, which NewStringUTF would abort on
+JNIEXPORT jbyteArray JNICALL Java_com_nxnative_GameMenu_nativeCheatInfo(JNIEnv *env, jclass c) {
+    (void)c; char *dm_cheats_info(void); char *s = dm_cheats_info(); jsize n = s ? (jsize)strlen(s) : 0;
+    jbyteArray r = (*env)->NewByteArray(env, n); if (r && n) (*env)->SetByteArrayRegion(env, r, 0, n, (const jbyte *)s); free(s); return r;
+}
 JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env, jclass c, jstring jk, jstring jv) {
     (void)c; const char *k = (*env)->GetStringUTFChars(env, jk, NULL), *v0 = (*env)->GetStringUTFChars(env, jv, NULL); const char *v = *v0 ? v0 : NULL; int now = 1;
     if (!strcmp(k, "DM_BACKGROUND")) g_bg_off = v && !strcmp(v, "off");
@@ -282,6 +287,7 @@ JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env,
         window_rate(atomic_load(&g_window)); }   // (Android is told the doubled rate, or the game's own again)
     else if (!strcmp(k, "DM_LSFG_MULT")) { extern volatile int dm_lsfg_mult; int m = v ? atoi(v) : 0; dm_lsfg_mult = m >= 2 && m <= 4 ? m : 0; }   // nvn_vk.c lsfg_mult: 0 auto
     else if (!strcmp(k, "DM_SCALER_SHARPNESS")) { extern volatile float dm_scaler_sharpness; dm_scaler_sharpness = !v || !strcmp(v, "sharp") ? 0.7f : !strcmp(v, "smooth") ? -1.0f : (float)atof(v); }   // nvn_vk.c scale_draw
+    else if (!strcmp(k, "DM_CHEATS")) { void dm_cheats_reload(void); dm_cheats_reload(); }   // the menu changed the cheat files or their switches: read again, applied at once
     else if (!strcmp(k, "DM_PAD_LAYOUT") || !strcmp(k, "DM_PAD_MAPPING")) {
         pthread_mutex_lock(&g_padset_mu);
         if (!g_padset_live) { const char *l = getenv("DM_PAD_LAYOUT"), *m = getenv("DM_PAD_MAPPING"); snprintf(g_padset_layout, sizeof g_padset_layout, "%s", l ? l : ""); snprintf(g_padset_map, sizeof g_padset_map, "%s", m ? m : ""); g_padset_live = 1; }
@@ -1069,6 +1075,7 @@ static void host_start(void) {
     { char m[4]; snprintf(m, sizeof m, "%d", DM_GAME_ANDROID_OPMODE); setenv("DM_OPMODE", m, 0); }   // the profile's android_op_mode (env.txt DM_OPMODE wins)
 #endif   // real sound output (AAudio, compat/aaudio_unit.c); env.txt can set 0
     // pipelines: every one the game makes is recorded here and built ahead at the next start, the list shipped with the game too, and the driver's compiled code kept
+    SETP("DM_CHEATS_DIR", "cheats"); mkdir(p, 0770);   // Atmosphère cheat files (cheats.c), the in-game menu's Cheats page
     SETP("DM_MODS_DIR", "mods");   // IPSwitch .pchtxt code mods, applied when their build ID matches (loader.c); env.txt may point elsewhere
     snprintf(p, sizeof p, "%s/mods", g_files); mkdir(p, 0770);   // made by the app itself, so it can read what is put there (a folder another user made, adb's for one, it cannot)
     boot_guard(p);   // (before the mods are read: a crash with mods switches them off)

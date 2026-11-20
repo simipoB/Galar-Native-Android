@@ -26,6 +26,10 @@ static uint8_t *g_alias; static size_t g_alias_cap;
 static _Atomic uint64_t *g_alias_bits;   // alias region page bitmap (alias_pages)
 static uint8_t *g_stack; static size_t g_stack_cap;
 // The address lies in the guest address block (every guest thread stack is here: the game's own heap or the stack region); the big-stack entry (hle_bigstack.c) uses it to decide whether to switch stacks
+// the guest's memory for the cheat engine (cheats.c): the whole block, the heap as opened so far, the alias region
+void dm_guest_regions(uint64_t *as, uint64_t *as_n, uint64_t *heap, uint64_t *heap_n, uint64_t *alias, uint64_t *alias_n) {
+    *as = (uint64_t)(uintptr_t)g_as; *as_n = g_as ? RESERVE : 0; *heap = (uint64_t)(uintptr_t)g_heap; *heap_n = g_heap_cur; *alias = (uint64_t)(uintptr_t)g_alias; *alias_n = g_alias_cap;
+}
 int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_as && a >= b && a - b < RESERVE; }
 
 static void *alias_windows_thread(void *arg);
