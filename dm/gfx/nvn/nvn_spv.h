@@ -63,3 +63,6 @@ uint32_t *spv_init_locals(const uint32_t *code, size_t words, size_t *out_words)
 // A copy in which a constant-zero limit of a min / max / clamp of a value selected between constants is a zero the compiler cannot fold (Arm erratum 3779215, see nvn_spv.c).
 // NULL if there is none
 uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words);
+// A diagnostic (DM_VK_DBG_FRAG): a copy whose colour output at location out_loc is, at the end, kind 0 vec4 (0), kind 1 abs (fragment input location k) / 64, or kind 2
+// abs (the k-th texture sample / fetch) / 64. NULL if the output is not a 32-bit float one or the code cannot be read
+uint32_t *spv_dbg_frag(const uint32_t *code, size_t words, int kind, int k, uint32_t out_loc, size_t *out_words);

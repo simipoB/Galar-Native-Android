@@ -395,3 +395,10 @@ Record the frame's passes	Gravar os passes do quadro
 For slow scenes: close this menu within 3 seconds and stay where the game is slow. Three frames' render passes, with their GPU time where the phone gives it, are saved in Download (a file ending in framegraph.txt). Attach it to your issue.	Para cenas lentas: feche este menu em até 3 segundos e fique onde o jogo está lento. Os passes de renderização de três quadros, com o tempo de GPU quando o telefone informa, são salvos em Download (um arquivo terminado em framegraph.txt). Anexe à sua issue.
 Recording in 3 seconds: close the menu.	Gravando em 3 segundos: feche o menu.
 Left: Auto, what the Graphics setting gives, lowered by itself when the phone is hot. Lower: cooler and faster, the 3D softer; text and menus stay sharp.	Esquerda: Automático, o que a configuração de Gráficos dá, reduzido sozinho quando o telefone esquenta. Mais baixo: mais frio e rápido, o 3D mais suave; texto e menus continuam nítidos.
+Show what the lit scene is made of	Mostrar do que a cena iluminada é feita
+Black	Preto
+Black: the lit scene's shaders write black. If the scene is not black, tell us: the test does not reach it	Preto: os shaders da cena iluminada escrevem preto. Se a cena não ficar preta, avise-nos: o teste não chega até ela
+Input %d	Entrada %d
+Input: the lit scene shows one value the vertex shader hands over, scaled down. Take a capture (Bug reports) and attach it	Entrada: a cena iluminada mostra um valor que o vertex shader entrega, reduzido. Faça uma captura (Relatar problemas) e anexe-a
+Texture %d	Textura %d
+Texture: the lit scene shows one texture read, scaled down. Take a capture (Bug reports) and attach it	Textura: a cena iluminada mostra uma leitura de textura, reduzida. Faça uma captura (Relatar problemas) e anexe-a

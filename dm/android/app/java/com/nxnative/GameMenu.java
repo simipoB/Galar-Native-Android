@@ -618,6 +618,15 @@ public final class GameMenu {
                 { "nanfix", t(a, "NaN fix"), t(a, "NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks") },
                 { "nanfix,nantex", t(a, "NaN fix + textures"), t(a, "NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks") },
                 { "f16target", t(a, "Float target"), t(a, "Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us") } });
+            // what the lit scene's shaders are made of (nvn_spv.c spv_dbg_frag): their colour replaced by one input or one texture sample (scaled down), for a capture
+            String[][] dbg = new String[18][];
+            dbg[0] = new String[] { "", t(a, "Off"), "" };
+            dbg[1] = new String[] { "zero", t(a, "Black"), t(a, "Black: the lit scene's shaders write black. If the scene is not black, tell us: the test does not reach it") };
+            for (int k = 0; k < 8; k++) {
+                dbg[2 + k] = new String[] { "in" + k, String.format(t(a, "Input %d"), k), t(a, "Input: the lit scene shows one value the vertex shader hands over, scaled down. Take a capture (Bug reports) and attach it") };
+                dbg[10 + k] = new String[] { "tex" + k, String.format(t(a, "Texture %d"), k), t(a, "Texture: the lit scene shows one texture read, scaled down. Take a capture (Bug reports) and attach it") };
+            }
+            choice(a, "DM_VK_DBG_FRAG", t(a, "Show what the lit scene is made of"), dbg);
             choice(a, "DM_VK_DEPTH_DISCARD", t(a, "Keep unused depth in tile memory"), new String[][] { { "", t(a, "Off"), "" },
                 { "1", t(a, "On"), t(a, "On: depth that nothing reads afterwards is not written back to memory (faster on Mali; a test: tell us if anything flickers)") } });
             choice(a, "DM_VK_B10_AS_RGBA16", t(a, "Bright scenes in a wider format"), new String[][] { { "", t(a, "Off"), "" },

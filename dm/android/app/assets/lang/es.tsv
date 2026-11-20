@@ -395,3 +395,10 @@ Record the frame's passes	Grabar los pases del fotograma
 For slow scenes: close this menu within 3 seconds and stay where the game is slow. Three frames' render passes, with their GPU time where the phone gives it, are saved in Download (a file ending in framegraph.txt). Attach it to your issue.	Para escenas lentas: cierra este menú en menos de 3 segundos y quédate donde el juego va lento. Los pases de render de tres fotogramas, con su tiempo de GPU si el teléfono lo da, se guardan en Descargas (un archivo que termina en framegraph.txt). Adjúntalo a tu issue.
 Recording in 3 seconds: close the menu.	Grabando en 3 segundos: cierra el menú.
 Left: Auto, what the Graphics setting gives, lowered by itself when the phone is hot. Lower: cooler and faster, the 3D softer; text and menus stay sharp.	Izquierda: Automático, lo que da el ajuste de Gráficos, bajado por sí solo cuando el teléfono se calienta. Más bajo: más fresco y rápido, el 3D más suave; el texto y los menús siguen nítidos.
+Show what the lit scene is made of	Mostrar de qué está hecha la escena iluminada
+Black	Negro
+Black: the lit scene's shaders write black. If the scene is not black, tell us: the test does not reach it	Negro: los shaders de la escena iluminada escriben negro. Si la escena no se ve negra, avísanos: la prueba no llega a ella
+Input %d	Entrada %d
+Input: the lit scene shows one value the vertex shader hands over, scaled down. Take a capture (Bug reports) and attach it	Entrada: la escena iluminada muestra un valor que entrega el vertex shader, reducido. Haz una captura (Informes de errores) y adjúntala
+Texture %d	Textura %d
+Texture: the lit scene shows one texture read, scaled down. Take a capture (Bug reports) and attach it	Textura: la escena iluminada muestra una lectura de textura, reducida. Haz una captura (Informes de errores) y adjúntala

@@ -395,3 +395,10 @@ Record the frame's passes	フレームのパスを記録
 For slow scenes: close this menu within 3 seconds and stay where the game is slow. Three frames' render passes, with their GPU time where the phone gives it, are saved in Download (a file ending in framegraph.txt). Attach it to your issue.	重い場面向け：3秒以内にこのメニューを閉じ、ゲームが重い場所にとどまってください。3フレーム分の描画パス（端末が対応していればGPU時間付き）がダウンロードに保存されます（framegraph.txt で終わるファイル）。issue に添付してください。
 Recording in 3 seconds: close the menu.	3秒後に記録します：メニューを閉じてください。
 Left: Auto, what the Graphics setting gives, lowered by itself when the phone is hot. Lower: cooler and faster, the 3D softer; text and menus stay sharp.	左端：自動（グラフィック設定どおり、端末が熱いと自動で下げます）。下げるほど発熱が減り速くなり、3Dはやわらかくなります。文字やメニューはくっきりのままです。
+Show what the lit scene is made of	照明された場面の材料を表示
+Black	黒
+Black: the lit scene's shaders write black. If the scene is not black, tell us: the test does not reach it	黒：照明された場面のシェーダーが黒を書き込みます。場面が黒くならない場合はお知らせください：テストが届いていません
+Input %d	入力 %d
+Input: the lit scene shows one value the vertex shader hands over, scaled down. Take a capture (Bug reports) and attach it	入力：照明された場面に頂点シェーダーから渡される値の一つを縮小して表示します。キャプチャ（不具合の報告）を撮って添付してください
+Texture %d	テクスチャ %d
+Texture: the lit scene shows one texture read, scaled down. Take a capture (Bug reports) and attach it	テクスチャ：照明された場面にテクスチャの読み取り結果の一つを縮小して表示します。キャプチャ（不具合の報告）を撮って添付してください

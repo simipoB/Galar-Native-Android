@@ -994,3 +994,108 @@ uint32_t *spv_to_10(const uint32_t *code, size_t words, size_t *out_words) {
         i += n; }
     *out_words = w; return o;
 }
+
+// ---- A diagnostic for the Mali white scene (DM_VK_DBG_FRAG, nvn_vk.c frag_module_) ----
+// A copy of a fragment shader whose colour output at location out_loc (Index 0) is replaced, just before each return of the entry function, by one of what it is made from,
+// so a frame capture shows which ingredient is huge: kind 0 vec4 (0); kind 1 abs (fragment input location k) / 64; kind 2 abs (the k-th texture sample or fetch of the
+// module, in order of appearance) / 64, copied into a new Private vec4 right after the sample (0 if it did not run). A scalar or shorter vector becomes (v, 0, ..., 1); an
+// integer one is converted to float. A missing input or sample writes 0. NULL when the output is not a 32-bit float one or the code cannot be read
+static uint32_t dbg_v4(uint32_t *o, size_t *w, uint32_t *next, uint32_t ty, uint32_t val, const uint8_t *tcls, const uint8_t *tn, const uint32_t fvec[5],
+                       uint32_t glsl, uint32_t cz, uint32_t c1, uint32_t cs) {
+    uint32_t n = tn[ty], c = tcls[ty];
+    if (!n || n > 4 || !c) return 0;
+    uint32_t ft = fvec[n], f = val;
+    if (c != 1) { f = (*next)++; o[(*w)++] = 4u << 16 | (c == 2 ? 111u /* OpConvertSToF */ : 112u /* OpConvertUToF */); o[(*w)++] = ft; o[(*w)++] = f; o[(*w)++] = val; }
+    uint32_t a = (*next)++, s = (*next)++;
+    o[(*w)++] = 6u << 16 | 12 /* OpExtInst */; o[(*w)++] = ft; o[(*w)++] = a; o[(*w)++] = glsl; o[(*w)++] = 4 /* FAbs */; o[(*w)++] = f;
+    o[(*w)++] = 5u << 16 | (n == 1 ? 133u /* OpFMul */ : 142u /* OpVectorTimesScalar */); o[(*w)++] = ft; o[(*w)++] = s; o[(*w)++] = a; o[(*w)++] = cs;
+    if (n == 4) return s;
+    uint32_t v = (*next)++, nk = n == 1 ? 4 : n == 2 ? 3 : 2;   // constituents: s, then zeros up to the alpha, then 1
+    o[(*w)++] = (3u + nk) << 16 | 80 /* OpCompositeConstruct */; o[(*w)++] = fvec[4]; o[(*w)++] = v; o[(*w)++] = s;
+    for (uint32_t q = n; q < 3; q++) o[(*w)++] = cz;
+    o[(*w)++] = c1;
+    return v;
+}
+uint32_t *spv_dbg_frag(const uint32_t *code, size_t words, int kind, int k, uint32_t out_loc, size_t *out_words) {
+    enum { DecIndex = 32, OpMemModel = 14, OpFn = 54, OpLd = 61, OpSt = 62, OpRet = 253 };
+    if (words < 5 || code[0] != 0x07230203u || kind < 0 || kind > 2 || k < 0) return NULL;
+    uint32_t bound = code[3]; if (!bound || bound > (1u << 22)) return NULL;
+    int32_t *loc = malloc(sizeof(int32_t) * bound); uint8_t *fl = calloc(bound, 1), *tcls = calloc(bound, 1), *tn = calloc(bound, 1); uint32_t *pto = calloc(bound, 4);
+    uint32_t *o = NULL;
+    if (!loc || !fl || !tcls || !tn || !pto) goto done;
+    for (uint32_t i = 0; i < bound; i++) loc[i] = -1;
+    uint32_t glsl = 0, tf32 = 0, fvec[5] = {0}, ppriv4 = 0, entry = 0, outvar = 0, outty = 0, invar = 0, inty = 0, nret = 0, nsamp = 0, samp_ty = 0;
+    size_t first_fn = 0, samp_at = 0, memmodel = 0;
+    // decorations, types, the entry point, the variables, the samples
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) goto done; const uint32_t *x = code + i;
+        if (op == OpDecorate && n >= 3 && x[1] < bound) {
+            if (x[2] == DecLocation && n >= 4) loc[x[1]] = (int32_t)x[3]; else if (x[2] == DecBuiltIn) fl[x[1]] |= 1; else if (x[2] == DecIndex && n >= 4 && x[3]) fl[x[1]] |= 2; }
+        else if (op == 11 /* OpExtInstImport */ && n >= 3 && !strncmp((const char *)(x + 2), "GLSL.std.450", 4 * (n - 2))) glsl = x[1];
+        else if (op == OpMemModel && !memmodel) memmodel = i;
+        else if (op == OpEntryPoint && n >= 3 && x[1] == 4 /* Fragment */ && !entry) entry = x[2];
+        else if (op == OpTypeFloat && n >= 3 && x[1] < bound && x[2] == 32 && !tf32) { tf32 = x[1]; tcls[x[1]] = 1; tn[x[1]] = 1; fvec[1] = x[1]; }
+        else if (op == OpTypeInt && n >= 4 && x[1] < bound && x[2] == 32) { tcls[x[1]] = x[3] ? 2 : 3; tn[x[1]] = 1; }
+        else if (op == OpTypeVector && n >= 4 && x[1] < bound && x[2] < bound && tn[x[2]] == 1 && x[3] >= 2 && x[3] <= 4) {
+            tcls[x[1]] = tcls[x[2]]; tn[x[1]] = (uint8_t)x[3]; if (x[2] == tf32 && !fvec[x[3]]) fvec[x[3]] = x[1]; }
+        else if (op == OpTypePointer && n >= 4 && x[1] < bound) { pto[x[1]] = x[3]; if (x[2] == SC_Private && fvec[4] && x[3] == fvec[4] && !ppriv4) ppriv4 = x[1]; }
+        else if (op == OpVariable && n >= 4 && x[1] < bound && x[2] < bound && !(fl[x[2]] & 1)) {
+            uint32_t pt = pto[x[1]] < bound ? pto[x[1]] : 0;
+            if (x[3] == SC_Output && loc[x[2]] == (int32_t)out_loc && !(fl[x[2]] & 2) && !outvar) { outvar = x[2]; outty = pt; }
+            if (x[3] == SC_Input && kind == 1 && loc[x[2]] == k && !invar) { invar = x[2]; inty = pt; } }
+        else if (op == OpFn && !first_fn) first_fn = i;
+        else if (op == OpRet) nret++;
+        else if (op >= 87 && op <= 95 && n >= 5 && x[1] < bound) { if (kind == 2 && (int)nsamp == k) { samp_at = i; samp_ty = x[1]; } nsamp++; }   // OpImageSample* / OpImageFetch
+        i += n; }
+    if (!entry || !outvar || !outty || tcls[outty] != 1 || !first_fn || !memmodel || !nret) goto done;
+    if (inty && (!tn[inty] || !tcls[inty])) invar = 0;      // an array or a struct at that location: not shown
+    if (samp_at && (!tn[samp_ty] || !tcls[samp_ty])) samp_at = 0;
+    {
+        size_t cap = words + 128 + 48 * (size_t)nret, w = 5; uint32_t next = bound; o = malloc(4 * cap); if (!o) goto done;
+        memcpy(o, code, 20);
+        uint32_t cz = 0, c1 = 0, cs = 0, null4 = 0, dbgvar = 0, cur_fn = 0, gl = glsl ? glsl : next++; int pre14 = code[1] < 0x00010400u;
+        if (kind == 2 && samp_at) dbgvar = next++;
+        for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; const uint32_t *x = code + i;
+            if (i == memmodel && !glsl) { o[w++] = 6u << 16 | 11 /* OpExtInstImport */; o[w++] = gl; memcpy(o + w, "GLSL.std.450\0\0\0", 16); w += 4; }
+            if (i == first_fn) {   // types / constants / the Private copy, before the first function
+                for (uint32_t c = 2; c <= 4; c++) if (!fvec[c]) { fvec[c] = next++; o[w++] = 4u << 16 | OpTypeVector; o[w++] = fvec[c]; o[w++] = tf32; o[w++] = c; }
+                cz = next++; c1 = next++; cs = next++; null4 = next++;
+                o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = cz; o[w++] = 0;
+                o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = c1; o[w++] = 0x3f800000u;
+                o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = cs; o[w++] = 0x3c800000u;   // 1/64
+                o[w++] = 3u << 16 | OpConstantNull; o[w++] = fvec[4]; o[w++] = null4;
+                if (dbgvar) {
+                    if (!ppriv4) { ppriv4 = next++; o[w++] = 4u << 16 | OpTypePointer; o[w++] = ppriv4; o[w++] = SC_Private; o[w++] = fvec[4]; }
+                    o[w++] = 5u << 16 | OpVariable; o[w++] = ppriv4; o[w++] = dbgvar; o[w++] = SC_Private; o[w++] = null4; }
+            }
+            if (op == OpEntryPoint && n >= 3 && x[2] == entry) {   // the interface: the input read listed (and from SPIR-V 1.4 the Private copy)
+                size_t s = 3; while (s < n && (x[s] & 0xff000000u) && (x[s] & 0xff0000u) && (x[s] & 0xff00u) && (x[s] & 0xffu)) s++; s++;
+                int has_in = !invar, has_dbg = !dbgvar || pre14;
+                for (size_t q = s; q < n; q++) { if (x[q] == invar) has_in = 1; if (x[q] == dbgvar) has_dbg = 1; }
+                size_t at = w; memcpy(o + w, x, 4 * n); w += n;
+                if (!has_in) o[w++] = invar;
+                if (!has_dbg) o[w++] = dbgvar;
+                o[at] = (uint32_t)(w - at) << 16 | op; i += n; continue;
+            }
+            if (op == OpFn && n >= 3) cur_fn = x[2];
+            if (op == OpRet && cur_fn == entry) {   // the replaced output, stored last
+                uint32_t v = 0;
+                if (kind == 1 && invar) { uint32_t l = next++; o[w++] = 4u << 16 | OpLd; o[w++] = inty; o[w++] = l; o[w++] = invar; v = dbg_v4(o, &w, &next, inty, l, tcls, tn, fvec, gl, cz, c1, cs); }
+                else if (kind == 2 && dbgvar) { v = next++; o[w++] = 4u << 16 | OpLd; o[w++] = fvec[4]; o[w++] = v; o[w++] = dbgvar; }
+                if (!v) v = null4;
+                uint32_t on = tn[outty];
+                if (on == 1) { uint32_t e = next++; o[w++] = 5u << 16 | 81 /* OpCompositeExtract */; o[w++] = tf32; o[w++] = e; o[w++] = v; o[w++] = 0; v = e; }
+                else if (on < 4) { uint32_t e = next++; o[w++] = (5u + on) << 16 | 79 /* OpVectorShuffle */; o[w++] = outty; o[w++] = e; o[w++] = v; o[w++] = v; for (uint32_t q = 0; q < on; q++) o[w++] = q; v = e; }
+                o[w++] = 3u << 16 | OpSt; o[w++] = outvar; o[w++] = v;
+            }
+            memcpy(o + w, x, 4 * n); w += n;
+            if (i == samp_at && dbgvar) {   // the sample's value, kept
+                uint32_t v = dbg_v4(o, &w, &next, x[1], x[2], tcls, tn, fvec, gl, cz, c1, cs);
+                if (v) { o[w++] = 3u << 16 | OpSt; o[w++] = dbgvar; o[w++] = v; }
+            }
+            i += n; }
+        o[3] = next; *out_words = w;
+    }
+done:
+    free(loc); free(fl); free(tcls); free(tn); free(pto);
+    return o;
+}

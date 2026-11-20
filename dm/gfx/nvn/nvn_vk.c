@@ -171,6 +171,7 @@ static int g_bcgpu;   // the BC layer is on (mtl_init): a mask of the paths that
 static int g_fctl_ext, g_drvprops_ext;   // a Vulkan 1.1 driver with VK_KHR_shader_float_controls / VK_KHR_driver_properties (enabled at device creation)
 static int g_fctl;    // every shader asks for SignedZeroInfNanPreserve (spv_float_controls; mtl_init decides)
 static int g_probe;   // DM_VK_PROBE (spv_probe's mask), 0 off
+static int g_dbgfrag = -1, g_dbgfrag_k; static char g_dbgfrag_name[8] = "off"; static _Atomic int g_dbgfrag_n;   // DM_VK_DBG_FRAG (spv_dbg_frag): -1 off, 0 zero, 1 in<k>, 2 tex<k>; shaders rewritten
 static int g_arm_rel, g_arm_p;   // Arm's own Mali driver: its release, r<rel>p<p> (driverVersion is VK_MAKE_VERSION(rel, p, 0): 0xb001000 = r44p1); 0 for any other driver
 static int g_arm_beta;           // ... a beta build of it (driverInfo "v1.r49p1-03bet0": the G925's)
 static int g_clampzero; static _Atomic int g_clampzero_n;   // shaders get spv_clamp_zero (Arm erratum 3779215: mtl_init decides); how many it changed
@@ -590,6 +591,17 @@ void mtl_init(void) {
                         g_probe & PROBE_INPUTS ? " every input from the vertex shader" : "", g_probe & PROBE_DIV ? " every division" : "", g_probe & PROBE_OUTPUT ? " what they write (±64)" : "", e);
       if (g_probe & (PROBE_MUL | PROBE_ADD | PROBE_FMA)) VLOG("shaders: DIAGNOSTIC, fragment shaders clamp every%s%s%s result (±16384)", g_probe & PROBE_MUL ? " multiply" : "",
                         g_probe & PROBE_ADD ? " add / subtract" : "", g_probe & PROBE_FMA ? " fused multiply-add" : ""); } }
+    // DM_VK_DBG_FRAG=zero / in<k> / tex<k> (k 0..7; a diagnostic for the white lit scene, the menu's Mali tests): fragment shaders drawing into a B10G11R11 colour target 0
+    //   write, instead of their colour, vec4 (0), abs (their input at location k) / 64 or abs (their k-th texture sample) / 64 (spv_dbg_frag, frag_module_), so a frame
+    //   capture shows which ingredient is huge. Off, and nothing changed, unless set
+    { const char *e = getenv("DM_VK_DBG_FRAG");
+      if (e && *e && strcmp(e, "off") && strcmp(e, "0")) {
+          int k = -1, kind = !strcmp(e, "zero") ? 0 : !strncmp(e, "in", 2) ? 1 : !strncmp(e, "tex", 3) ? 2 : -1;
+          if (kind > 0) { const char *d = e + (kind == 1 ? 2 : 3); if (d[0] >= '0' && d[0] <= '7' && !d[1]) k = d[0] - '0'; else kind = -1; }
+          if (kind < 0) VLOG("[RED] debug fragment output: DM_VK_DBG_FRAG=%s is not zero, in0..in7 or tex0..tex7: off", e);
+          else { g_dbgfrag = kind; g_dbgfrag_k = k < 0 ? 0 : k; snprintf(g_dbgfrag_name, sizeof g_dbgfrag_name, "%s", e);
+                 VLOG("shaders: DIAGNOSTIC, fragment shaders drawing into a B10G11R11 target write %s instead of their colour (DM_VK_DBG_FRAG=%s)",
+                      kind == 0 ? "0" : kind == 1 ? "abs (an input) / 64" : "abs (a texture sample) / 64", e); } } }
     { const char *e = getenv("DM_VK_NAN_MINMAX"); g_nanmm = e ? atoi(e) : g_arm_rel ? 2 : 0; if (g_nanmm < 0 || g_nanmm > 2) g_nanmm = 1;
       if (g_nanmm) VLOG("shaders: min / max / saturate give the operand that is not NaN, as on the Switch's GPU (NMin / NMax / NClamp%s%s)", g_nanmm == 2 ? " and the rule written out with isnan" : "",
                         e ? ", DM_VK_NAN_MINMAX" : ", Arm's own driver"); }
@@ -2590,7 +2602,7 @@ typedef struct vshader {
     uint64_t in_mask, out_mask;                 // user varyings by location (spv_io_masks)
     uint32_t *code; size_t nw;                  // fragment shaders: the (rebound) SPIR-V, for variants
     uint8_t out_cls[8];                         // fragment outputs by location: 0 float, 1 uint, 2 sint, 255 none
-    struct { uint64_t drop; uint32_t um, sm; int sw; VkShaderModule mod; } var[8]; int nvar;   // sw: outputs 0 and 1 swapped (g_ds_swap)   // variants: inputs the previous stage never writes (drop), float outputs to integer targets (um / sm)
+    struct { uint64_t drop; uint32_t um, sm; int sw, dbg; VkShaderModule mod; } var[8]; int nvar; uint8_t dbg_seen;   // sw: outputs 0 and 1 swapped (g_ds_swap)   // variants: inputs the previous stage never writes (drop), float outputs to integer targets (um / sm)
     int tf[4][2]; uint16_t tf_stride[4]; VkShaderModule tfmod;   // transform feedback: per buffer { output location, components } and stride; the capture variant (tf_draw)
 } vshader;
 static char g_spv_dir[1024];
@@ -2974,9 +2986,9 @@ static int cap_start(void) {
     if (vkCreateBuffer(g_dev, &bi, NULL, &g_cap_buf)) { vkDestroyImage(g_dev, g_cap_img, NULL); vk_free(g_cap_ia); return 0; }
     vkGetBufferMemoryRequirements(g_dev, g_cap_buf, &rq); g_cap_ba = vk_alloc(rq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1); vkBindBufferMemory(g_dev, g_cap_buf, g_cap_ba.b->mem, g_cap_ba.off);
     g_cap_n = 0; g_cap_layout = 0; g_cap_draws = 0; g_cap_ntex = 0; g_cap_len = 0; g_cap_ns = 0; g_cap_dp = 0; g_cap_nd = 0;
-    cap_printf("Frame capture, present %llu. GPU %s (vendor %#x, driver %#x, Vulkan %u.%u). BC textures %s; BC layer %s; float controls %s.\n", (unsigned long long)g_cap_frame, g_props.deviceName, g_props.vendorID,
+    cap_printf("Frame capture, present %llu. GPU %s (vendor %#x, driver %#x, Vulkan %u.%u). BC textures %s; BC layer %s; float controls %s; debug fragment output %s (%d shaders).\n", (unsigned long long)g_cap_frame, g_props.deviceName, g_props.vendorID,
                g_props.driverVersion, VK_API_VERSION_MAJOR(g_props.apiVersion), VK_API_VERSION_MINOR(g_props.apiVersion),
-               nvn_fmt_vk_transcode(0x46) ? "transcoded on upload" : nvn_fmt_vk_decode(0x46) ? "decoded on upload" : "sampled by the GPU", g_bcgpu ? "on" : "off", g_fctl ? "on" : "off");
+               nvn_fmt_vk_transcode(0x46) ? "transcoded on upload" : nvn_fmt_vk_decode(0x46) ? "decoded on upload" : "sampled by the GPU", g_bcgpu ? "on" : "off", g_fctl ? "on" : "off", g_dbgfrag_name, atomic_load(&g_dbgfrag_n));
     cap_printf("Formats are Vulkan VkFormat numbers (vk) and NVN format numbers (nvn). Pictures: NNN.png, 320x180, values above 1.0 shown as white.\n\n");
     return 1;
 }
@@ -3464,12 +3476,16 @@ static VkShaderModule frag_module_(vprog *pr, const uint32_t *cfmt, int sw) {
     vshader *fs = pr->sh[1], *pv = pr->sh[2] ? pr->sh[2] : pr->sh[4] ? pr->sh[4] : pr->sh[0];
     uint64_t drop = fs->in_mask & ~(pv ? pv->out_mask : 0); uint32_t um = 0, sm = 0;
     for (int i = 0; i < 8; i++) if (cfmt[i] && fs->out_cls[i] == 0) { int c = fmt_int_class((VkFormat)cfmt[i]); if (c == 1) um |= 1u << i; else if (c == 2) sm |= 1u << i; }
-    if ((!drop && !um && !sm && !sw) || !fs->code) return fs->mod;
+    int dbg = g_dbgfrag >= 0 && cfmt[0] == VK_FORMAT_B10G11R11_UFLOAT_PACK32;   // DM_VK_DBG_FRAG: a diagnostic copy (spv_dbg_frag), part of the variant's key
+    if ((!drop && !um && !sm && !sw && !dbg) || !fs->code) return fs->mod;
     pthread_mutex_lock(&g_psomu);
-    for (int i = 0; i < fs->nvar; i++) if (fs->var[i].drop == drop && fs->var[i].um == um && fs->var[i].sm == sm && fs->var[i].sw == sw) { VkShaderModule m = fs->var[i].mod; pthread_mutex_unlock(&g_psomu); return m; }
+    for (int i = 0; i < fs->nvar; i++) if (fs->var[i].drop == drop && fs->var[i].um == um && fs->var[i].sm == sm && fs->var[i].sw == sw && fs->var[i].dbg == dbg) { VkShaderModule m = fs->var[i].mod; pthread_mutex_unlock(&g_psomu); return m; }
     pthread_mutex_unlock(&g_psomu);
     size_t nw = fs->nw; uint32_t *c = NULL, *c2;
-    if (drop && (c2 = spv_drop_inputs(fs->code, fs->nw, drop, &nw))) c = c2;
+    // (first, on the shader as written: its inputs are still inputs; with outputs 0 and 1 to be swapped, output 1 is the one that reaches the target)
+    if (dbg && (c2 = spv_dbg_frag(fs->code, fs->nw, g_dbgfrag, g_dbgfrag_k, sw ? 1 : 0, &nw))) {
+        c = c2; pthread_mutex_lock(&g_psomu); if (!fs->dbg_seen) { fs->dbg_seen = 1; atomic_fetch_add(&g_dbgfrag_n, 1); } pthread_mutex_unlock(&g_psomu); }
+    if (drop && (c2 = spv_drop_inputs(c ? c : fs->code, c ? nw : fs->nw, drop, &nw))) { free(c); c = c2; }
     if ((um || sm) && (c2 = spv_int_outputs(c ? c : fs->code, c ? nw : fs->nw, um, sm, &nw))) { free(c); c = c2; }
     if (sw && (c2 = spv_swap_out01(c ? c : fs->code, c ? nw : fs->nw, &nw))) { free(c); c = c2; }
     if (!c) return fs->mod;
@@ -3480,7 +3496,7 @@ static VkShaderModule frag_module_(vprog *pr, const uint32_t *cfmt, int sw) {
     if (um | sm) VLOG("fragment shader %s: float outputs %#x / %#x written as uint / int bits (integer colour targets)", fs->key, um, sm);
     if (sw) { static int said; if (said++ < 16) VLOG("fragment shader %s: a copy with outputs 0 and 1 swapped, for its dual-source blend in two steps", fs->key); }
     pthread_mutex_lock(&g_psomu);
-    if (fs->nvar < 8) { fs->var[fs->nvar].drop = drop; fs->var[fs->nvar].um = um; fs->var[fs->nvar].sm = sm; fs->var[fs->nvar].sw = sw; fs->var[fs->nvar].mod = m; fs->nvar++; }
+    if (fs->nvar < 8) { fs->var[fs->nvar].drop = drop; fs->var[fs->nvar].um = um; fs->var[fs->nvar].sm = sm; fs->var[fs->nvar].sw = sw; fs->var[fs->nvar].dbg = dbg; fs->var[fs->nvar].mod = m; fs->nvar++; }
     pthread_mutex_unlock(&g_psomu);
     return m;
 }
@@ -5939,6 +5955,7 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     if (n % 900 == 0 && atomic_load(&g_pso_new) >= 10) { static atomic_int busy; if (!atomic_exchange(&busy, 1)) {   // new pipelines: the cache file is rewritten in the background
         pthread_t t; void *saver(void *a); if (pthread_create(&t, NULL, saver, &busy)) atomic_store(&busy, 0); else pthread_detach(t); } }
     if (n % 1800 == 0) { VLOG("pipelines built during play so far: %d", atomic_load(&g_pso_ingame)); mem_report(); }
+    if (g_dbgfrag >= 0 && n >= 300) { static int said; int nd = atomic_load(&g_dbgfrag_n); if (nd && !said) { said = 1; VLOG("debug fragment output: %s on %d shaders drawing into B10G11R11", g_dbgfrag_name, nd); } }
     if (n % 1800 == 0 && (g_nanmm || g_clampzero || g_fmz)) VLOG("shaders changed so far: %d for NaN in min / max / saturate, %d for Arm erratum 3779215, %d for FMZ", atomic_load(&g_nanmm_n), atomic_load(&g_clampzero_n), atomic_load(&g_fmz_n));
     if ((n == 1 || n % 300 == 0) && atomic_load(&g_pre_done) + atomic_load(&g_pre_late) + atomic_load(&g_pre_full))
         VLOG("textures uploaded ahead %llu (%ld MB of them not drawn yet), used before the worker got to them %llu, left to their first use (budget or queue full) %llu", (unsigned long long)atomic_load(&g_pre_done), atomic_load(&g_pre_unused) >> 20, (unsigned long long)atomic_load(&g_pre_late), (unsigned long long)atomic_load(&g_pre_full));
