@@ -1485,6 +1485,7 @@ static void img_init(vtex *t, int zero) {
     VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = t->img, .subresourceRange = { t->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS } };
+    if (logpass_on()) VLOG("[tex-init] img %p zero %d once %d", (void *)t->img, zero && t->samples <= 1, once);
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
     if (zero && t->samples <= 1) {
         VkImageSubresourceRange r = { t->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
@@ -1576,6 +1577,8 @@ static vtex *tex_new(const tex_t *t, int pkg) {
     VkMemoryRequirements rq; vkGetImageMemoryRequirements(g_dev, x->img, &rq);
     x->a = vk_alloc(rq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0); atomic_fetch_add(&g_live_tex_bytes, (long)x->a.size);
     VKCHECK(vkBindImageMemory(g_dev, x->img, x->a.b->mem, x->a.off));
+    if (logpass_on()) VLOG("[tex] img %p %ux%ux%u fmt %d nvn %d levels %u layers %u samples %u usage %#x flags %#x list %d 3d %d cube %d target %d pkg %d", (void *)x->img, x->w, x->h, x->d,
+                           (int)x->fmt, x->nvn_fmt, x->levels, x->layers, x->samples, (unsigned)ci.usage, (unsigned)ci.flags, ci.pNext != NULL, x->is3d, x->cube_ok, t->d.target, pkg);   // (the Mali test's texture replay)
     static int logged;
     if (p_layout2 && (ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && logged < 8) {   // the first render targets: is their framebuffer compression on?
         VkImageCompressionPropertiesEXT cp = { .sType = VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_PROPERTIES_EXT };
@@ -1692,6 +1695,7 @@ static int tex_upload_(vtex *x, const tex_t *t, uint64_t *copy_ns) {
         }
     }
     free(scratch);
+    if (logpass_on()) VLOG("[tex-up] img %p regions %u bytes %llu once %d", (void *)x->img, nrg, (unsigned long long)total, once);
     if (nrg) vkCmdCopyBufferToImage(cb, sb, x->img, VK_IMAGE_LAYOUT_GENERAL, nrg, rg);
     free(rg); g_up_bytes += total;
     if (once) { once_end(cb); vkDestroyBuffer(g_dev, sb, NULL); vk_free(tmp); }
