@@ -12,9 +12,13 @@ default_min_sdk = BUILD_APK["DEFAULT_MIN_SDK"]
 
 
 def main():
-    assert default_version == 27
+    assert default_version == 29
     assert default_min_sdk == 30
     assert len(shader_chain()) == 12
+    builder = open(os.path.join(os.path.dirname(BUILDER), "build_apk.py"), encoding="utf-8").read()
+    assert 'android:name="com.nxnative.SettingsActivity" android:exported="true"' in builder
+    assert 'android:name="com.nxnative.SetupActivity" android:exported="true" android:theme="@android:style/Theme.DeviceDefault" />' in builder
+    assert "activity-alias" not in builder
     with tempfile.TemporaryDirectory() as temp:
         current = os.path.join(temp, "current.so")
         with open(current, "wb") as stream:

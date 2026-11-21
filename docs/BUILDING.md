@@ -10,7 +10,7 @@ involved in the build.
 sudo apt install git curl python3-venv build-essential cmake ninja-build
 git clone <this repository> && cd PKShield-Android
 bash scripts/build_apk_pc.sh            # → ~/psa-build/PokemonShield.apk
-TURNIP=1 bash scripts/build_apk_pc.sh   # the same, plus custom Adreno drivers (Mesa Turnip) on the settings screen
+TURNIP=1 bash scripts/build_apk_pc.sh   # the same, plus custom Vulkan drivers (Mesa Turnip / PanVK) on the settings screen
 ```
 
 On its first run the script fetches what it needs into `~/psa-build` (set `WORK=` for another folder): the Android NDK r27c, the .NET 10 SDK, the
@@ -55,7 +55,13 @@ both are signed with the same key.
 ## Reporting a problem
 
 Attach `Android/data/com.nxnative.pokemonshield/files/log.txt` (and `log.prev.txt`), the phone model, its GPU and Android version. The
-`Vulkan device` line near the top of the log shows the GPU, the driver, and which texture and memory paths were chosen.
+`Vulkan device` line near the top of the log shows the GPU, the driver, and which texture and memory paths were chosen. Renderer startup also logs
+`dynamic` or `classic render-pass` rendering and `timeline` or `binary fence` synchronization. The classic path is intended for Vulkan 1.1/1.2
+drivers that do not expose `VK_KHR_dynamic_rendering`; it uses cached render passes and framebuffers rather than an extension-only workaround.
+
+If setup fails during extraction, attach `Android/data/com.nxnative.pokemonshield/files/setup_work/setup.log` instead. An error such as
+`nx_extract terminated by SIGABRT (-6)` means the extractor process was aborted before Vulkan started; the selected dump paths, their sizes,
+and free space are recorded immediately before extraction.
 
 ## Rebuilding only the engine
 

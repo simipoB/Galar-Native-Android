@@ -31,6 +31,7 @@ import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -61,6 +62,21 @@ public class SetupActivity extends Activity {
     private TextView status, gameText, keysText; private ProgressBar bar; private Button setup, play, shortcut, saveExport, saveImport; private ImageView logo;
     private volatile boolean running;
     private String shaderChain;
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0 && isGameLaunchKey(event.getKeyCode())) {
+            if (ready() && !running) startGame();
+            else if (status != null) status.setText("Set up the game before pressing +/Start to play.");
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private boolean isGameLaunchKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BUTTON_START
+            || keyCode == KeyEvent.KEYCODE_BUTTON_SELECT
+            || keyCode == KeyEvent.KEYCODE_MENU;
+    }
 
     private File gameDir() { return getExternalFilesDir(null); }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }

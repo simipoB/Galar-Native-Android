@@ -14,34 +14,29 @@
 | `host/movie_avc_android.c` | H.264 movies (the staff credits) on MediaCodec |
 | `Makefile.host`, `tools/win_build_lib.py` | Build the engine library (Linux / macOS, or Windows) |
 
-The installable app supports Android 11 (API 30) and later. Its graphics requirements still depend on the device's Vulkan implementation and extensions.
-
 Setup builds shader locations, facts, and pairs from the selected game dump instead of assuming it contains every shader in the profile's reference map. This lets base-game-only setups use their actual package indices; profile entries for shaders captured later at runtime are retained.
 
-Save data can be exported as a ZIP and edited externally, then imported from the launcher with **Import edited save data**. The archive is validated and staged privately; the next Play action atomically swaps it into place and keeps the previous save as a backup. The APK also exposes a separate **Pokémon Shield Settings** launcher entry, so launchers that do not show long-press shortcuts can open the setup screen from the app drawer.
+Save data can be exported as a ZIP and edited externally, then imported from the launcher with **Import edited save data**. The archive is validated and staged privately; the next Play action atomically swaps it into place and keeps the previous save as a backup.
 
 ## Graphics (`dm/gfx/nvn/nvn_vk.c`)
 
 The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at start from what the device reports:
 
-- **The driver**: the phone's own, or an AdrenoTools-compatible custom package (Mesa Turnip or PanVK) opened through libadrenotools; every Vulkan function is loaded at run time
+- **The driver**: the phone's own, or a custom one (Mesa Turnip) opened through libadrenotools; every Vulkan function is loaded at run time
   (`vk_dispatch.h`).
-
-  To build an APK that can import custom packages, run `CUSTOM_DRIVER=1 bash scripts/build_apk_pc.sh`.
-  The launcher accepts `.adpkg.zip` PanVK packages and legacy PanVK ZIPs when they contain `meta.json`
-  with a `libraryName` ending in `.so`. The package is installed privately and selected for the next
-  game start; it does not replace Android's system driver. PanVK support is experimental and remains
-  device-specific. The PanVK repositories listed in the issue are not tested on the AYANEO Thor/Mali-G615
-  or Mali-G720, so the system driver remains the safe default.
-- **Vulkan version**: the highest version reported by the driver up to 1.3, or 1.1 / 1.2 with dynamic rendering, timeline semaphores and extended dynamic state as extensions. This avoids rejecting older Mali drivers during instance creation.
+- **Vulkan version**: the highest version reported by the driver up to 1.3. Dynamic rendering is used when the core feature or `VK_KHR_dynamic_rendering` is available; Vulkan 1.1/1.2 devices without it use the classic `VkRenderPass`/`VkFramebuffer` backend. Timeline semaphores are preferred, with binary fences used when the timeline feature is unavailable.
 - **GPU memory**: the game's memory pools are shared with the GPU through host-memory import, `VK_KHR_external_memory_fd` export, or driver-memory
   mapping moves. If a driver advertises fd export but rejects an opaque-fd buffer, or its mappings cannot be moved onto the game pools, the app falls back
   to mirrored memory, copying changes in both directions around GPU submissions.
 - **Framebuffer compression**: render targets list their view formats instead of being freely mutable, which keeps Adreno's UBWC on; on Mali
   every plain colour image does, and those with a single format are not mutable at all (AFBC). With `VK_EXT_image_compression_control` the log
   says whether the first render targets are compressed.
+- **Attachment diagnostics**: when Mali rejects a render-target image or view format, the log records the NVN serial, Vulkan formats, usage
+  flags, and optimal-tiling features. This distinguishes an unsupported attachment format from a depth or presentation failure.
 - **Textures**: BC1–BC7 sampled by the GPU where it can, else decoded on the CPU as they load (`dm/gfx/tex/bc_decode.c`).
 - **Shaders**: SPIR-V made on the phone during setup (`shaders.pak`); pipelines recorded as the game makes them and built ahead at the next start.
+
+Startup logs report the selected rendering and synchronization backends. A Vulkan 1.1 device without dynamic rendering should show `classic render-pass` and continue past renderer initialization; missing required dynamic-state support remains a clear startup error.
 
 ## Graphics quality
 
