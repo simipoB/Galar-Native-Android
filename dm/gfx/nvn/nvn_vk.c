@@ -99,13 +99,14 @@ static void *vk_open(void) {
             char *lib = name + 1; *name = 0;   // folder / library name
             char ddir[1030]; snprintf(ddir, sizeof ddir, "%s/", dir);
             void *h = op(RTLD_NOW, 1 /* ADRENOTOOLS_DRIVER_CUSTOM */, NULL, libdir, ddir, lib, NULL, NULL);
-            if (h) { VLOG("Vulkan driver %s (opened through libadrenotools)", drv); return h; }
+            if (h) { const char *_sha = getenv("DM_VK_DRIVER_SHA256"); VLOG("Vulkan driver %s (opened through libadrenotools)%s%.16s%s", drv, _sha && *_sha ? " (sha256 " : "", _sha ? _sha : "", _sha && *_sha ? "\xe2\x80\xa6)" : ""); return h; }
         }
-        void *h = dlopen(drv, RTLD_NOW | RTLD_LOCAL);
-        if (h) { VLOG("Vulkan driver %s (opened directly; libadrenotools %s)", drv, op ? "failed" : "missing"); return h; }
+        if (at) { dlclose(at); at = NULL; }
+        void *h = dlopen(drv, RTLD_NOW | RTLD_GLOBAL);
+        if (h) { const char *_sha = getenv("DM_VK_DRIVER_SHA256"); VLOG("Vulkan driver %s (opened directly; libadrenotools %s)%s%.16s%s", drv, op ? "failed" : "missing", _sha && *_sha ? " (sha256 " : "", _sha ? _sha : "", _sha && *_sha ? "\xe2\x80\xa6)" : ""); return h; }
         VLOG("[RED] Vulkan driver %s could not be opened (libadrenotools %s, directly: %s): the system driver is used", drv, op ? "failed" : "missing", dlerror());
     }
-    return dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    return dlopen("libvulkan.so", RTLD_NOW | RTLD_GLOBAL);
 #else
     void *h = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL); if (!h) h = dlopen("libMoltenVK.dylib", RTLD_NOW | RTLD_LOCAL); if (!h) h = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
     return h;
