@@ -99,6 +99,7 @@ static VkPhysicalDeviceProperties g_props; static VkPhysicalDeviceMemoryProperti
 #include "prewarm_policy.h"   // the prewarm's stamp, hold, list compaction and cap share (perf-1124 S3 / S4)
 #include "vk_quirks.h"   // the unified driver layer's table: every per-GPU workaround's default, from one description of the GPU
 static gpu_id g_gpuid = { .driver_id = -1 };
+static uint8_t g_st_used;   // stencil bits anything may have set (st_bits)
 static int g_has_swapchain, g_host_import, g_clipctl, g_border, g_stexp, g_divisor, g_eds2, g_moltenvk;
 static int g_mclamp;   // MIRROR_CLAMP_TO_EDGE samplers allowed (VK_KHR_sampler_mirror_clamp_to_edge, or Vulkan 1.2's samplerMirrorClampToEdge); else wrapm falls back
 static int g_inst_xmemcaps;   // VK_KHR_external_memory_capabilities enabled on the instance
@@ -6090,6 +6091,11 @@ static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark) {
     if (!tfcap && (P.hd || P.hs)) {   // a draw writing depth / stencil: noted; in a pass begun with store op NONE for it, the pass restarts storing (pass_writes)
         int st_w = P.hs && S.ds.st && (S.st_wmask[0] || S.st_wmask[1]) && (S.ds.fail_f != NVN_STENCIL_OP_KEEP || S.ds.zpass_f != NVN_STENCIL_OP_KEEP || S.ds.zfail_f != NVN_STENCIL_OP_KEEP ||
                    S.ds.fail_b != NVN_STENCIL_OP_KEEP || S.ds.zpass_b != NVN_STENCIL_OP_KEEP || S.ds.zfail_b != NVN_STENCIL_OP_KEEP);
+        if (st_w) {   // (zcopy_draw copies only stencil bits something could have set: REPLACE sets the reference's bits under the write mask, KEEP / ZERO none, the others any)
+            int ops[2][3] = { { S.ds.fail_f, S.ds.zpass_f, S.ds.zfail_f }, { S.ds.fail_b, S.ds.zpass_b, S.ds.zfail_b } };
+            for (int f = 0; f < 2; f++) for (int k = 0; k < 3; k++) {
+                int op = ops[f][k]; if (op == NVN_STENCIL_OP_KEEP || op == NVN_STENCIL_OP_ZERO) continue;
+                g_st_used |= (uint8_t)(op == NVN_STENCIL_OP_REPLACE ? S.st_ref[f] & S.st_wmask[f] : S.st_wmask[f]); } }
         pass_writes(P.hd && S.ds.dt && S.ds.dw, st_w);
         if (!P.open) return;
         if ((P.hd && S.ds.dt) || (P.hs && S.ds.st)) P.dtest = 1;   // (reads the attachment: seg_record_prim's LOAD_OP_NONE needs a pass that never does)
@@ -6412,6 +6418,12 @@ static int zc_setup(VkFormat fmt, VkPipeline *pd, VkPipeline *ps) {   // the two
     ZC.fmt[ZC.n] = fmt; ZC.pd[ZC.n] = a; ZC.pds[ZC.n] = c; ZC.ps[ZC.n++] = b; *pd = a; *ps = b;
     return !!a;
 }
+// Stencil bits for the drawn copy's one-bit-a-draw path (no stencil export: Arm's driver): only the bits any draw's write mask, a clear's value or a copy from
+//   memory could have set since the start (g_st_used); every other bit is 0 in every image. DM_VK_ZCOPY_ALLBITS=1: all eight, as before
+static int st_bits(void) { static int all = -1; if (all < 0) { const char *e = getenv("DM_VK_ZCOPY_ALLBITS"); all = e && atoi(e) == 1; }
+    static int last = -1; if (last != g_st_used) { last = g_st_used;
+        VLOG("depth / stencil texture copy without stencil export: only the stencil bits the game sets (%#x so far; DM_VK_ZCOPY_ALLBITS=1: all eight)", g_st_used); }
+    return all ? 0xff : g_st_used; }
 // DM_VK_ZCOPY_FORCE=1 (a test): depth copies that scale drawn even where the GPU can blit into the format (the PC's lavapipe), to check the drawn copy there
 static int zcopy_force(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_ZCOPY_FORCE"); v = e && atoi(e) == 1; } return v; }
 // Draws the copy (outside a pass; the caller orders it after); 0: not taken (blit it). s0 / s1: the source box's corners as a blit's (s1 < s0: mirrored)
@@ -6459,7 +6471,8 @@ static int zcopy_draw(vtex *s, vtex *d, const VkImageSubresourceLayers *ss, cons
         else vkCmdDraw(cb, 3, 1, 0, 0);
         if (stencil && !pds) {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, ps); vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff);
-            for (int bit = 0; bit < 8; bit++) { pc.lim[2] = bit; vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 1u << bit);
+            for (int bit = 0; bit < 8; bit++) { if (!(st_bits() >> bit & 1)) continue;   // (a bit nothing ever set is 0 in the source too: the depth draw wrote 0)
+                pc.lim[2] = bit; vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 1u << bit);
                 vkCmdPushConstants(cb, ZC.pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc); vkCmdDraw(cb, 3, 1, 0, 0); }
             pc.lim[2] = 0;
         }
@@ -6555,6 +6568,7 @@ static int b10_quantize_region(VkCommandBuffer cb, vtex *x, uint32_t level, uint
 static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
     vtex *x = tex_res(c->tex);
     sk_read(x);   // copied from, or written in part
+    if (!to_buffer && x && (x->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) g_st_used = 0xff;   // (stencil from memory: any bit)
     if (log_copy_pair(c->tex->serial, c->src | (uint64_t)to_buffer << 63)) VLOG("frame %llu copy %s: texture ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d, buffer %#llx%s", (unsigned long long)g_frame_no, to_buffer ? "texture→buffer" : "buffer→texture", (unsigned long long)c->tex->serial,
                          c->tex->d.width, c->tex->d.height, c->tex->d.format, c->tex->d.flags, c->r.xoffset, c->r.yoffset, c->r.width, c->r.height, (unsigned long long)c->src, x && x->img ? "" : " (no image)");
     if (!x || !x->img) return;
@@ -6878,7 +6892,7 @@ void mtl_exec(const uint8_t *p) {
                     asp = (c->depth_mask && P.hd ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (c->stencil_mask && P.hs ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
                     if (asp) clear_in_pass(-1, &v, asp); break; }
                 if (c->depth_mask) { R.clear_d = 1; R.cd = c->depth; }
-                if (c->stencil_mask) { R.clear_s = 1; R.cs = (uint32_t)c->stencil; }
+                if (c->stencil_mask) { R.clear_s = 1; R.cs = (uint32_t)c->stencil; g_st_used |= (uint8_t)c->stencil; }
                 break;
             }
             case OP_DRAW: draw((const p_draw *)a, NULL); g_stat_draws++; fgr_draw(); hp_draw(); sub_split(); break;
