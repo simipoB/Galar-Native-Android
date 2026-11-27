@@ -1402,19 +1402,38 @@ bind:
     e.backed = 1; *out = e;
 }
 static _Atomic uint64_t g_pool_late_n, g_pool_late_bytes, g_pool_late_ns;   // pools backed late, their bytes, the time it took (the census line)
-void mtl_pool_add(const void *mem, uint64_t size) {
+static _Atomic uint64_t g_pool_early_n, g_pool_early_bytes, g_pool_early_ns;   // pools backed when made because their flags say buffer pool (pool_early below)
+// Pools whose NVN flags say the GPU reads them as buffers are backed when they are made, as every pool was before the late backing (0682c76): backing one late, at the GPU's
+//   first read, stalled the replay thread 20-390 ms a pool, on Xclipse 530 89-116 times a run all through play (the 2026-11-25 logs, #383 #384 #398 #400). In every
+//   census so far the flags tell them apart: CPU-writable GPU pools (0x22 CPU uncached + GPU cached, 0x12 GPU uncached, 0x24 CPU cached) are the buffer pools (224 of
+//   236 MB of 0x22 read as buffers) and the late backings were all of them, while CPU-no-access pools (0x21 textures, 0xa1 compressible render targets) and shader code
+//   (0x61) never were: those stay the game's own memory, so the memory saving of the late backing stays. A pool the flags miss is still backed at its first read.
+//   Not for virtual / physical pools (0x100 / 0x200) or unknown flags (-1). DM_VK_POOL_EARLY=0: back only at the first read (v0.99 - v1.01)
+static int pool_early(int flags) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_POOL_EARLY"); on = !(e && !atoi(e)); }
+    if (!on || flags < 0) return 0;
+    return !(flags & 0x1) && !(flags & 0x8) && (flags & 0x30) && !(flags & (0x40 | 0x80 | 0x100 | 0x200));   // CPU access, GPU access; not shader code, compressible, physical or virtual
+}
+void mtl_pool_add_ex(const void *mem, uint64_t size, int flags) {
     mtl_init();
     uintptr_t pg = (uintptr_t)(g_host_import ? g_host_align : (VkDeviceSize)getpagesize()), lo = (uintptr_t)mem, hi = lo + size;
     uintptr_t a = lo & ~(pg - 1), b = (hi + pg - 1) & ~(pg - 1); VkDeviceSize n = b - a;
     pool_ent e = { lo, hi, a, VK_NULL_HANDLE, VK_NULL_HANDLE, n, mem, NULL, NULL, 0, 0 };
-    e.flags = -1;
+    e.flags = flags;
     if (!pool_lazy()) pool_back(&e);
+    else if (pool_early(flags)) {   // (the pool is not yet in the table nor tracked: backed as before the late backing, late = 0, on the thread making it)
+        uint64_t t0 = mono_ns(); pool_back(&e); uint64_t dt = mono_ns() - t0;
+        uint64_t k = atomic_fetch_add(&g_pool_early_n, 1); atomic_fetch_add(&g_pool_early_bytes, n); atomic_fetch_add(&g_pool_early_ns, dt);
+        if (!k) VLOG("memory pools: pools the GPU reads as buffers (by their flags: CPU-writable GPU pools) get GPU memory when made, not at the first read (DM_VK_POOL_EARLY=0: at the first read)");
+        if (k < 3 || dt > 20000000) VLOG("memory pools: pool %p+%#llx (flags %#x) backed when made (%.2f ms)", mem, (unsigned long long)size, flags, dt / 1e6);
+    }
     pthread_mutex_lock(&g_mu);
     if (g_npool == g_cpool) { g_cpool = g_cpool ? g_cpool * 2 : 64; g_pools = realloc(g_pools, g_cpool * sizeof *g_pools); }
     g_pools[g_npool++] = e; ps_add(g_npool - 1); g_plast = -1;
     g_gfx_bind_gen++;   // (a new pool can reuse a deleted one's buffer handle: draw_'s state shadow binds the streams again)
     pthread_mutex_unlock(&g_mu);
 }
+void mtl_pool_add(const void *mem, uint64_t size) { mtl_pool_add_ex(mem, size, -1); }
 // The game's NVN flags of a pool just made (hle_nvn.c, after mtl_pool_add): for the census line only
 void mtl_pool_flags(const void *mem, int flags) {
     pthread_mutex_lock(&g_mu);
@@ -8404,8 +8423,10 @@ static void pool_census(void) {
     for (int k = 0; k < ng && o < (int)sizeof fl - 120; k++)
         o += snprintf(fl + o, sizeof fl - (size_t)o, "%s%#x: %d, %.0f MB (buffers %.0f, textures only %.0f, neither %.0f)", k ? "; " : "", g[k].flags, g[k].n, g[k].b / M, g[k].buf / M, g[k].tex / M, g[k].none / M);
     if (other) snprintf(fl + o, sizeof fl - (size_t)o, "; %d more with other flags", other);
-    VLOG("[mem] pool census: %d pools, %.0f MB: read as buffers %d (%.0f MB), texture data only %d (%.0f MB), neither %d (%.0f MB); on GPU memory %d (%.0f MB; %llu backed late, %.0f MB, %.0f ms in all; %s); by flags %s",
-         n, all / M, nbuf, bbuf / M, ntex, btex / M, nnone, bnone / M, nback, bback / M, (unsigned long long)atomic_load(&g_pool_late_n), atomic_load(&g_pool_late_bytes) / M,
+    VLOG("[mem] pool census: %d pools, %.0f MB: read as buffers %d (%.0f MB), texture data only %d (%.0f MB), neither %d (%.0f MB); on GPU memory %d (%.0f MB; %llu backed when made, %.0f MB, %.0f ms; %llu backed late, %.0f MB, %.0f ms in all; %s); by flags %s",
+         n, all / M, nbuf, bbuf / M, ntex, btex / M, nnone, bnone / M, nback, bback / M,
+         (unsigned long long)atomic_load(&g_pool_early_n), atomic_load(&g_pool_early_bytes) / M, atomic_load(&g_pool_early_ns) / 1e6,
+         (unsigned long long)atomic_load(&g_pool_late_n), atomic_load(&g_pool_late_bytes) / M,
          atomic_load(&g_pool_late_ns) / 1e6, pool_lazy() ? "only pools read as buffers" : "every pool", fl);
 }
 // Once a minute: where the renderer's memory is, so growth can be told apart (caches that level off: shaders, pipelines; anything else that keeps rising is a leak)
