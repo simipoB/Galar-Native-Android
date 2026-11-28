@@ -198,6 +198,7 @@ int golden_be_tex_fill(const golden_texi *h, const uint8_t *data, size_t n) {
     vtex *x = tex_res(&h->t);
     if (!x || !x->img) { VLOG("[RED] golden: no image for texture ser=%llu (format %#x)", (unsigned long long)h->t.serial, h->nvnfmt); return 0; }
     int depth = (x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) != 0, stencil = (x->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
+    if (stencil) g_st_used = 0xff;   // (stencil from earlier frames: any bit, st_bits)
     if (x->w != h->w || x->h != h->h || x->levels != h->levels || (x->is3d ? x->d != h->d : x->layers != h->layers) || (h->kind == 0) != (!depth && !stencil)) {
         VLOG("[RED] golden: texture ser=%llu is %ux%ux%u, %u levels here, %ux%ux%u, %u levels recorded: not filled", (unsigned long long)h->t.serial, x->w, x->h, x->is3d ? x->d : x->layers, x->levels, h->w, h->h, h->is3d ? h->d : h->layers, h->levels);
         return 0; }

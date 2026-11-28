@@ -99,7 +99,8 @@ static VkPhysicalDeviceProperties g_props; static VkPhysicalDeviceMemoryProperti
 #include "prewarm_policy.h"   // the prewarm's stamp, hold, list compaction and cap share (perf-1124 S3 / S4)
 #include "vk_quirks.h"   // the unified driver layer's table: every per-GPU workaround's default, from one description of the GPU
 static gpu_id g_gpuid = { .driver_id = -1 };
-static int g_has_swapchain, g_host_import, g_clipctl, g_border, g_divisor, g_eds2, g_moltenvk;
+static uint8_t g_st_used;   // stencil bits anything may have set (st_bits)
+static int g_has_swapchain, g_host_import, g_clipctl, g_border, g_stexp, g_divisor, g_eds2, g_moltenvk;
 static int g_mclamp;   // MIRROR_CLAMP_TO_EDGE samplers allowed (VK_KHR_sampler_mirror_clamp_to_edge, or Vulkan 1.2's samplerMirrorClampToEdge); else wrapm falls back
 static int g_inst_xmemcaps;   // VK_KHR_external_memory_capabilities enabled on the instance
 // Passes as dynamic rendering (1) or as Vulkan 1.0 render passes (0: rend_begin); draw state set per draw (1, extended dynamic state) or built into each pipeline (0: sst).
@@ -454,6 +455,8 @@ static void mtl_init_(void) {
     if (g_has_swapchain && (g_dtiming = has_ext(de, nde, "VK_GOOGLE_display_timing"))) dext[ndext++] = "VK_GOOGLE_display_timing";   // frame pacing (pace_time)
     if ((g_clipctl = !as_mali && has_ext(de, nde, "VK_EXT_depth_clip_control"))) dext[ndext++] = "VK_EXT_depth_clip_control";
     if ((g_border = has_ext(de, nde, "VK_EXT_custom_border_color"))) dext[ndext++] = "VK_EXT_custom_border_color";
+    // stencil export: a depth / stencil texture copy drawn as one draw instead of nine (zcopy_draw; DM_VK_STENCIL_EXPORT=0: the nine, as before)
+    { const char *e = getenv("DM_VK_STENCIL_EXPORT"); if ((g_stexp = !(e && !strcmp(e, "0")) && has_ext(de, nde, "VK_EXT_shader_stencil_export"))) dext[ndext++] = "VK_EXT_shader_stencil_export"; }
     // NVN's mirror-clamp wrap modes (MIRROR_CLAMP / _TO_EDGE) are Vulkan's MIRROR_CLAMP_TO_EDGE, which is not core 1.0: Mali-G72 r26p0, Mali-G52, PowerVR BXM and
     //   Vulkan 1.0 drivers lack it (simdev). The extension where listed; 1.2's feature below; without either, mirrored repeat (wrapm)
     if ((g_mclamp = has_ext(de, nde, "VK_KHR_sampler_mirror_clamp_to_edge"))) dext[ndext++] = "VK_KHR_sampler_mirror_clamp_to_edge";
@@ -4140,7 +4143,11 @@ static int cap_start(void) {
 }
 static void cap_pass(void) {
     VkCommandBuffer cb = CB(); int idx_first = g_cap_n;
-    cap_printf("pass: %ux%u, %d draws, %d colour target(s), depth format vk %u\n", P.tw, P.th, g_cap_draws, P.ncolor, P.dfmt);
+    cap_printf("pass: %ux%u, %d draws, %d colour target(s), depth format vk %u", P.tw, P.th, g_cap_draws, P.ncolor, P.dfmt);
+    // (serials, as the copy lines and DM_VK_LOG_COPY give them. Written when the pass ends, which a target change does: they are the targets set now, the next pass's)
+    if (R.rt.depth) cap_printf(", next targets: depth ser %llu", (unsigned long long)R.rt.depth->serial);
+    for (int i = 0; i < 8; i++) if (R.rt.color[i]) cap_printf(", colour %d ser %llu", i, (unsigned long long)R.rt.color[i]->serial);
+    cap_printf("\n");
     for (int i = 0; i < 8; i++) {
         const tex_t *ct = R.rt.color[i]; if (!ct) continue;
         vtex *x = tex_res(ct); if (!x || !x->img) { cap_printf("  colour %d: no image\n", i); continue; }
@@ -4182,7 +4189,7 @@ static void cap_pass(void) {
 static void cap_tex(int tid, const tex_t *t, const vtex *x, int vfmt, VkFormat f) {
     for (int i = 0; i < g_cap_ntex; i++) if (g_cap_tex[i] == tid) return;
     if (g_cap_ntex < 64) g_cap_tex[g_cap_ntex++] = tid;
-    cap_printf("  reads texture %d: nvn %#x, image vk %d %ux%u%s, viewed as vk %d; BC here: %s%s\n", tid, t->d.format, x->fmt, x->w, x->h,
+    cap_printf("  reads texture %d (ser %llu): nvn %#x, image vk %d %ux%u%s, viewed as vk %d; BC here: %s%s\n", tid, (unsigned long long)t->serial, t->d.format, x->fmt, x->w, x->h,
                x->pkg ? " (from the game's files)" : " (made at run time)", f, nvn_fmt_vk_transcode(t->d.format) ? "transcoded" : nvn_fmt_vk_decode(t->d.format) ? "decoded" : "no",
                x->alt && x->alt_fmt == vfmt ? "; this view reads its own second conversion" : "");
     if (vfmt) cap_printf("    (view format nvn %#x)\n", vfmt);
@@ -6103,6 +6110,11 @@ static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark) {
     if (!tfcap && (P.hd || P.hs)) {   // a draw writing depth / stencil: noted; in a pass begun with store op NONE for it, the pass restarts storing (pass_writes)
         int st_w = P.hs && S.ds.st && (S.st_wmask[0] || S.st_wmask[1]) && (S.ds.fail_f != NVN_STENCIL_OP_KEEP || S.ds.zpass_f != NVN_STENCIL_OP_KEEP || S.ds.zfail_f != NVN_STENCIL_OP_KEEP ||
                    S.ds.fail_b != NVN_STENCIL_OP_KEEP || S.ds.zpass_b != NVN_STENCIL_OP_KEEP || S.ds.zfail_b != NVN_STENCIL_OP_KEEP);
+        if (st_w) {   // (zcopy_draw copies only stencil bits something could have set: REPLACE sets the reference's bits under the write mask, KEEP / ZERO none, the others any)
+            int ops[2][3] = { { S.ds.fail_f, S.ds.zpass_f, S.ds.zfail_f }, { S.ds.fail_b, S.ds.zpass_b, S.ds.zfail_b } };
+            for (int f = 0; f < 2; f++) for (int k = 0; k < 3; k++) {
+                int op = ops[f][k]; if (op == NVN_STENCIL_OP_KEEP || op == NVN_STENCIL_OP_ZERO) continue;
+                g_st_used |= (uint8_t)(op == NVN_STENCIL_OP_REPLACE ? S.st_ref[f] & S.st_wmask[f] : S.st_wmask[f]); } }
         pass_writes(P.hd && S.ds.dt && S.ds.dw, st_w);
         if (!P.open) return;
         if ((P.hd && S.ds.dt) || (P.hs && S.ds.st)) P.dtest = 1;   // (reads the attachment: seg_record_prim's LOAD_OP_NONE needs a pass that never does)
@@ -6372,12 +6384,13 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
 //   Anything it cannot take (the same image, multisample, 3D, an image not made for this) keeps the blit. DM_VK_ZCOPY=0: the blit always, as before
 #include "overlay/zcopy_spv.h"
 typedef struct { float m[4]; int32_t lim[4]; } zcopy_pc;   // source texel = pixel * m.xy + m.zw; lim.xy: the source level's last texel, lim.z: the stencil bit
-static struct { VkDescriptorSetLayout dsl; VkPipelineLayout pl; VkSampler samp; int failed, n; VkFormat fmt[6]; VkPipeline pd[6], ps[6]; } ZC;
+static struct { VkDescriptorSetLayout dsl; VkPipelineLayout pl; VkSampler samp; int failed, n; VkFormat fmt[6]; VkPipeline pd[6], ps[6], pds[6]; } ZC;   // (pds: depth and stencil in one draw, stencil export)
 static int fmt_feat(VkFormat f, VkFormatFeatureFlags want) { VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_pd, f, &fp); return (fp.optimalTilingFeatures & want) == want; }
-static VkPipeline zc_pipe(VkFormat fmt, int sbits) {
+static VkPipeline zc_pipe(VkFormat fmt, int sbits) {   // (sbits 0: depth, 1: one stencil bit a draw, 2: both in one draw, VK_EXT_shader_stencil_export)
     VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE; VkPipeline p = VK_NULL_HANDLE;
     VkShaderModuleCreateInfo mv = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof zcopy_vert_spv, .pCode = zcopy_vert_spv },
-                             mf = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sbits ? sizeof zcopy_s_frag_spv : sizeof zcopy_d_frag_spv, .pCode = sbits ? zcopy_s_frag_spv : zcopy_d_frag_spv };
+                             mf = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sbits == 2 ? sizeof zcopy_ds_frag_spv : sbits ? sizeof zcopy_s_frag_spv : sizeof zcopy_d_frag_spv,
+                                  .pCode = sbits == 2 ? zcopy_ds_frag_spv : sbits ? zcopy_s_frag_spv : zcopy_d_frag_spv };
     if (vkCreateShaderModule(g_dev, &mv, NULL, &vm) || vkCreateShaderModule(g_dev, &mf, NULL, &fm)) goto out;
     int st = fmt_has_stencil(fmt);
     VkPipelineShaderStageCreateInfo sg[2] = { { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vm, .pName = "main" },
@@ -6388,7 +6401,7 @@ static VkPipeline zc_pipe(VkFormat fmt, int sbits) {
     VkPipelineRasterizationStateCreateInfo rs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1 };
     VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
     VkStencilOpState so = { VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE, VK_COMPARE_OP_ALWAYS, 0xff, 0, 0 };   // (write mask and reference: dynamic)
-    VkPipelineDepthStencilStateCreateInfo dss = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = !sbits, .depthWriteEnable = !sbits,
+    VkPipelineDepthStencilStateCreateInfo dss = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = sbits != 1, .depthWriteEnable = sbits != 1,
         .depthCompareOp = VK_COMPARE_OP_ALWAYS, .stencilTestEnable = st, .front = so, .back = so, .maxDepthBounds = 1 };
     VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
     VkDynamicState dyn[4] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE };
@@ -6416,13 +6429,22 @@ static int zc_setup(VkFormat fmt, VkPipeline *pd, VkPipeline *ps) {   // the two
     }
     for (int i = 0; i < ZC.n; i++) if (ZC.fmt[i] == fmt) { *pd = ZC.pd[i]; *ps = ZC.ps[i]; return !!*pd; }
     if (ZC.n == 6) return 0;
-    VkPipeline a = zc_pipe(fmt, 0), b = fmt_has_stencil(fmt) ? zc_pipe(fmt, 1) : VK_NULL_HANDLE;
+    VkPipeline a = zc_pipe(fmt, 0), b = fmt_has_stencil(fmt) ? zc_pipe(fmt, 1) : VK_NULL_HANDLE, c = b && g_stexp ? zc_pipe(fmt, 2) : VK_NULL_HANDLE;
     if (!a || (fmt_has_stencil(fmt) && !b)) { if (a) vkDestroyPipeline(g_dev, a, NULL); if (b) vkDestroyPipeline(g_dev, b, NULL); a = b = VK_NULL_HANDLE;
         RED_ONCE(138, "depth / stencil texture copy: its pipelines failed for format %d: blitted as before", fmt); }
     else VLOG("depth / stencil texture copy ready (format %d%s)", fmt, b ? ", with stencil" : "");
-    ZC.fmt[ZC.n] = fmt; ZC.pd[ZC.n] = a; ZC.ps[ZC.n++] = b; *pd = a; *ps = b;
+    if (c) VLOG("depth / stencil texture copy: depth and stencil in one draw (stencil export; DM_VK_STENCIL_EXPORT=0: nine draws)");
+    ZC.fmt[ZC.n] = fmt; ZC.pd[ZC.n] = a; ZC.pds[ZC.n] = c; ZC.ps[ZC.n++] = b; *pd = a; *ps = b;
     return !!a;
 }
+// Stencil bits for the drawn copy's one-bit-a-draw path (no stencil export: Arm's driver): only the bits any draw's write mask, a clear's value or a copy from
+//   memory could have set since the start (g_st_used); every other bit is 0 in every image. DM_VK_ZCOPY_ALLBITS=1: all eight, as before
+static int st_bits(void) { static int all = -1; if (all < 0) { const char *e = getenv("DM_VK_ZCOPY_ALLBITS"); all = e && atoi(e) == 1; }
+    static int last = -1; if (last != g_st_used) { last = g_st_used;
+        VLOG("depth / stencil texture copy without stencil export: only the stencil bits the game sets (%#x so far; DM_VK_ZCOPY_ALLBITS=1: all eight)", g_st_used); }
+    return all ? 0xff : g_st_used; }
+// DM_VK_ZCOPY_FORCE=1 (a test): depth copies that scale drawn even where the GPU can blit into the format (the PC's lavapipe), to check the drawn copy there
+static int zcopy_force(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_ZCOPY_FORCE"); v = e && atoi(e) == 1; } return v; }
 // Draws the copy (outside a pass; the caller orders it after); 0: not taken (blit it). s0 / s1: the source box's corners as a blit's (s1 < s0: mirrored)
 static int zcopy_draw(vtex *s, vtex *d, const VkImageSubresourceLayers *ss, const VkImageSubresourceLayers *ds, VkOffset2D s0, VkOffset2D s1, VkOffset2D d0, VkExtent2D de) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_ZCOPY"); on = !e || atoi(e) != 0; }
@@ -6462,10 +6484,14 @@ static int zcopy_draw(vtex *s, vtex *d, const VkImageSubresourceLayers *ss, cons
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pd);
         vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, stencil ? 0xff : 0); vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);   // (the stencil to 0, its bits drawn next)
         vkCmdPushConstants(cb, ZC.pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
-        vkCmdDraw(cb, 3, 1, 0, 0);
-        if (stencil) {
+        VkPipeline pds = VK_NULL_HANDLE; if (stencil) for (int i = 0; i < ZC.n; i++) if (ZC.fmt[i] == d->fmt) pds = ZC.pds[i];
+        if (pds) {   // (stencil export: the stencil written as the reference the shader gives, with the depth)
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pds); vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff); vkCmdDraw(cb, 3, 1, 0, 0); }
+        else vkCmdDraw(cb, 3, 1, 0, 0);
+        if (stencil && !pds) {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, ps); vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xff);
-            for (int bit = 0; bit < 8; bit++) { pc.lim[2] = bit; vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 1u << bit);
+            for (int bit = 0; bit < 8; bit++) { if (!(st_bits() >> bit & 1)) continue;   // (a bit nothing ever set is 0 in the source too: the depth draw wrote 0)
+                pc.lim[2] = bit; vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 1u << bit);
                 vkCmdPushConstants(cb, ZC.pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc); vkCmdDraw(cb, 3, 1, 0, 0); }
             pc.lim[2] = 0;
         }
@@ -6561,6 +6587,7 @@ static int b10_quantize_region(VkCommandBuffer cb, vtex *x, uint32_t level, uint
 static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
     vtex *x = tex_res(c->tex);
     sk_read(x);   // copied from, or written in part
+    if (!to_buffer && x && (x->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) g_st_used = 0xff;   // (stencil from memory: any bit)
     if (log_copy_pair(c->tex->serial, c->src | (uint64_t)to_buffer << 63)) VLOG("frame %llu copy %s: texture ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d, buffer %#llx%s", (unsigned long long)g_frame_no, to_buffer ? "texture→buffer" : "buffer→texture", (unsigned long long)c->tex->serial,
                          c->tex->d.width, c->tex->d.height, c->tex->d.format, c->tex->d.flags, c->r.xoffset, c->r.yoffset, c->r.width, c->r.height, (unsigned long long)c->src, x && x->img ? "" : " (no image)");
     if (!x || !x->img) return;
@@ -6613,6 +6640,9 @@ static void copy_t2t(const p_copy_t2t *c) {
     pass_flush();
     vtex *s = tex_res(c->src), *d = tex_res(c->dst);
     sk_read(s); sk_read(d);
+    if (atomic_load(&g_cap) == 2) cap_printf("copy: ser %llu (%ux%u nvn %#x) region %d,%d %dx%d -> ser %llu (%ux%u nvn %#x) region %d,%d %dx%d\n",
+        (unsigned long long)c->src->serial, c->src->d.width, c->src->d.height, c->src->d.format, c->sr.xoffset, c->sr.yoffset, c->sr.width, c->sr.height,
+        (unsigned long long)c->dst->serial, c->dst->d.width, c->dst->d.height, c->dst->d.format, c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height);
     if (log_copy_pair(c->src->serial, c->dst->serial)) VLOG("frame %llu copy texture→texture: ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d → ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d%s", (unsigned long long)g_frame_no, (unsigned long long)c->src->serial,
                          c->src->d.width, c->src->d.height, c->src->d.format, c->src->d.flags, c->sr.xoffset, c->sr.yoffset, c->sr.width, c->sr.height, (unsigned long long)c->dst->serial,
                          c->dst->d.width, c->dst->d.height, c->dst->d.format, c->dst->d.flags, c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height, s && d && s->img && d->img ? "" : " (an image missing)");
@@ -6661,7 +6691,7 @@ static void copy_t2t(const p_copy_t2t *c) {
         VkImageBlit r = { ss, {{sx0, sy0, 0}, {sx1, sy1, 1}}, ds, {{c->dr.xoffset, c->dr.yoffset, 0}, {c->dr.xoffset + c->dr.width, c->dr.yoffset + c->dr.height, 1}} };
         int lin = (c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) && !(s->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT);
         if (s->samples > 1 || d->samples > 1) RED_ONCE(49, "multisample texture blit not supported");
-        else if ((d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && !fmt_feat(d->fmt, VK_FORMAT_FEATURE_BLIT_DST_BIT)
+        else if ((d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && (!fmt_feat(d->fmt, VK_FORMAT_FEATURE_BLIT_DST_BIT) || zcopy_force())
                  && zcopy_draw(s, d, &ss, &ds, (VkOffset2D){ sx0, sy0 }, (VkOffset2D){ sx1, sy1 }, (VkOffset2D){ c->dr.xoffset, c->dr.yoffset }, (VkExtent2D){ (uint32_t)c->dr.width, (uint32_t)c->dr.height })) {}
         else vkCmdBlitImage(CB(), s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r, lin ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     }
@@ -6881,7 +6911,7 @@ void mtl_exec(const uint8_t *p) {
                     asp = (c->depth_mask && P.hd ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (c->stencil_mask && P.hs ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
                     if (asp) clear_in_pass(-1, &v, asp); break; }
                 if (c->depth_mask) { R.clear_d = 1; R.cd = c->depth; }
-                if (c->stencil_mask) { R.clear_s = 1; R.cs = (uint32_t)c->stencil; }
+                if (c->stencil_mask) { R.clear_s = 1; R.cs = (uint32_t)c->stencil; g_st_used |= (uint8_t)c->stencil; }
                 break;
             }
             case OP_DRAW: draw((const p_draw *)a, NULL); g_stat_draws++; fgr_draw(); hp_draw(); sub_split(); break;
